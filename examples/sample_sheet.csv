@@ -1,0 +1,11 @@
+sample_id,group,replicate,origin,colony_count,species,strain,passage_number,fastq_r1,fastq_r2,notes
+Mel1,Melittin,1,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel1_R1.fastq.gz,fastq/Mel1_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Mel2,Melittin,2,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel2_R1.fastq.gz,fastq/Mel2_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Mel3,Melittin,3,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel3_R1.fastq.gz,fastq/Mel3_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Mel4,Melittin,4,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel4_R1.fastq.gz,fastq/Mel4_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Mel5,Melittin,5,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel5_R1.fastq.gz,fastq/Mel5_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Mel6,Melittin,6,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Mel6_R1.fastq.gz,fastq/Mel6_R2.fastq.gz,Evolved with 0.5x MIC Melittin
+Ctrl1,Control,1,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Ctrl1_R1.fastq.gz,fastq/Ctrl1_R2.fastq.gz,Passaged without treatment
+Ctrl2,Control,2,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Ctrl2_R1.fastq.gz,fastq/Ctrl2_R2.fastq.gz,Passaged without treatment
+Ctrl3,Control,3,population,10,Staphylococcus aureus,ATCC 29213,30,fastq/Ctrl3_R1.fastq.gz,fastq/Ctrl3_R2.fastq.gz,Passaged without treatment
+Anc1,Ancestor,1,single_colony,1,Staphylococcus aureus,ATCC 29213,0,fastq/Anc1_R1.fastq.gz,fastq/Anc1_R2.fastq.gz,Original ancestral strain

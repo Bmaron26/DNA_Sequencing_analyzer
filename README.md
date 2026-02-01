@@ -12,6 +12,16 @@ A comprehensive pipeline for whole genome sequencing (WGS) analysis of bacterial
 - **Rich Output**: CSV/TSV mutation tables, VCF files, and interactive visualizations
 - **Configurable**: YAML-based configuration for all pipeline parameters
 
+### New: Multi-Sample & AMR Features
+
+- **Treatment Groups**: Define experimental groups (e.g., Melittin, Cecropin, Control)
+- **Sample Origin Tracking**: Track single colony vs population (~10 colony) samples
+- **Batch Processing**: Analyze multiple samples with one command
+- **Convergent Evolution Detection**: Identify mutations appearing across parallel replicates
+- **AMR Database Integration**: Cross-reference with CARD, ResFinder, and species-specific databases
+- **Species-Specific Analysis**: Pre-configured for S. aureus, E. coli, P. aeruginosa
+- **AMP Resistance Focus**: Highlight mutations in membrane modification and regulatory genes
+
 ## Installation
 
 ### Prerequisites
@@ -234,6 +244,28 @@ The pipeline generates several visualizations:
 - **Low mapping rate**: May indicate wrong reference or contamination
 - **Unusual Ti/Tv**: May indicate sequencing artifacts
 
+### Interpreting Population Samples
+
+When samples originate from multiple colonies (~10), low-frequency variants may represent:
+- **Subpopulation mutations**: Present in some but not all colonies
+- **Emerging resistance**: Early-stage adaptive mutations
+- **Hitchhiker mutations**: Neutral mutations in a subset of cells
+
+The tool flags population samples and provides frequency information to help interpretation.
+
+### AMR Interpretation
+
+The AMR annotation provides:
+- **Known resistance mutations**: Validated mutations from CARD/ResFinder with clinical evidence
+- **Resistance gene mutations**: Novel mutations in known resistance genes (possible emerging resistance)
+- **AMP-related mutations**: Mutations in membrane/LPS modification genes relevant for AMP resistance
+
+For S. aureus AMP resistance, key genes include:
+- **mprF**: Lysyl-phosphatidylglycerol synthesis (positive membrane charge)
+- **dltABCD operon**: D-alanylation of teichoic acids
+- **graSR/vraSR**: Two-component regulatory systems
+- **Membrane phospholipid genes**: cls, pgsA, pssA
+
 ## Use Cases
 
 ### AMP Resistance Evolution
@@ -254,20 +286,106 @@ comparison = stats1.compare_samples(stats2)
 print(f"New mutations in evolved strain: {len(comparison['unique_to_sample2'])}")
 ```
 
-### Batch Processing
+### Batch Processing with Treatment Groups
+
+For experiments with multiple samples and treatment groups, use the batch analysis feature:
 
 ```bash
-#!/bin/bash
-# Process multiple samples
-for sample in sample1 sample2 sample3; do
-    bma analyze \
-        -1 fastq/${sample}_R1.fastq.gz \
-        -2 fastq/${sample}_R2.fastq.gz \
-        -r reference.fasta \
-        -a annotation.gff \
-        -n $sample \
-        -o results
-done
+# 1. Create a sample sheet (CSV)
+# See examples/sample_sheet.csv for format
+
+# 2. Run batch analysis with AMR annotation
+bma batch -e samples.csv -r reference.fasta -a genes.gff --species "S. aureus" -o results
+```
+
+**Sample sheet format (CSV):**
+```csv
+sample_id,group,replicate,origin,colony_count,fastq_r1,fastq_r2,notes
+Mel1,Melittin,1,population,10,fastq/Mel1_R1.fastq.gz,fastq/Mel1_R2.fastq.gz,Evolved with Melittin
+Mel2,Melittin,2,population,10,fastq/Mel2_R1.fastq.gz,fastq/Mel2_R2.fastq.gz,Evolved with Melittin
+Ctrl1,Control,1,population,10,fastq/Ctrl1_R1.fastq.gz,fastq/Ctrl1_R2.fastq.gz,No treatment
+```
+
+**Sample origin options:**
+- `single_colony`: Sample from a single isolated colony
+- `population`: Sample from pooled colonies (~10) - may contain subpopulation variants
+
+### Compare Samples Across Groups
+
+```bash
+# Compare mutations across samples and identify convergent evolution
+bma compare results/ -e samples.csv -o comparison_results
+
+# Output includes:
+# - convergent_mutations.csv: Mutations appearing in multiple samples
+# - mutation_matrix.csv: Sample x mutation presence matrix
+# - comparison_report.json: Full comparison statistics
+```
+
+### AMR Database Annotation
+
+```bash
+# Annotate variants with known resistance mutations
+bma amr results/Mel1/Mel1_pipeline_result.json --species "S. aureus"
+
+# List available species
+bma species
+```
+
+**Supported species:**
+- *Staphylococcus aureus* - includes mprF, dlt operon, vraSR, graSR for AMP resistance
+- *Escherichia coli* - includes pmrAB, phoPQ, arn genes for colistin/AMP resistance
+- *Pseudomonas aeruginosa* - includes parRS, cprRS systems
+
+### Python API for Multi-Sample Analysis
+
+```python
+from bacterial_mutation_analyzer.experiment import Experiment, SampleMetadata, TreatmentGroup, SampleOrigin
+from bacterial_mutation_analyzer.analysis import MultiSampleComparison
+from bacterial_mutation_analyzer.amr import AMRAnnotator
+
+# Define experiment
+exp = Experiment(
+    name="AMP_Evolution",
+    species="Staphylococcus aureus",
+    strain="ATCC 29213"
+)
+
+# Add treatment groups
+exp.add_group(TreatmentGroup(
+    name="Melittin",
+    treatment_type="AMP",
+    treatment_agent="Melittin",
+    concentration="0.5x MIC"
+))
+
+# Add samples (6 parallel replicates, each from ~10 colonies)
+for i in range(1, 7):
+    exp.add_sample(SampleMetadata(
+        sample_id=f"Mel{i}",
+        group="Melittin",
+        replicate=i,
+        origin=SampleOrigin.POPULATION,
+        colony_count=10,
+        fastq_r1=f"fastq/Mel{i}_R1.fastq.gz",
+        fastq_r2=f"fastq/Mel{i}_R2.fastq.gz",
+    ))
+
+# Run comparison analysis
+comparison = MultiSampleComparison(exp)
+comparison.load_all_samples("results/")
+
+# Find convergent mutations (parallel evolution)
+convergent = comparison.get_convergent_mutations(min_samples=2)
+for cm in convergent:
+    print(f"{cm.mutation.gene_name}: {cm.mutation.amino_acid_change} "
+          f"in {cm.replicates_affected} samples (score: {cm.convergence_score})")
+
+# AMR annotation
+annotator = AMRAnnotator("S. aureus")
+for sample_id, result in comparison.sample_results.items():
+    report = annotator.annotate_variants(result['variants'], sample_id)
+    print(f"{sample_id}: {report.amp_related_mutations} AMP-related mutations")
 ```
 
 ## Troubleshooting
