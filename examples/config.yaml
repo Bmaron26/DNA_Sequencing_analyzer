@@ -1,0 +1,86 @@
+# Bacterial Mutation Analyzer Configuration
+# ==========================================
+# Copy this file and modify as needed for your analysis
+
+# Quality Control Settings
+qc:
+  min_quality: 20          # Minimum base quality score (Phred)
+  min_length: 50           # Minimum read length after trimming
+  adapter_trimming: true   # Enable automatic adapter detection/trimming
+  quality_encoding: phred33
+  trim_front: 0            # Bases to trim from 5' end
+  trim_tail: 0             # Bases to trim from 3' end
+  max_n_ratio: 0.1         # Maximum ratio of N bases allowed
+  complexity_filter: true  # Filter low complexity reads
+
+# Alignment Settings
+alignment:
+  aligner: bwa             # Options: bwa, minimap2, bowtie2
+  threads: 4               # Number of threads for alignment
+  min_mapping_quality: 20  # Minimum mapping quality
+  mark_duplicates: true    # Mark duplicate reads
+  remove_duplicates: false # Remove duplicates (false = just mark)
+  max_insert_size: 1000    # Maximum insert size for paired-end
+
+# Variant Calling Settings
+variant_calling:
+  caller: bcftools         # Options: bcftools, freebayes
+  min_base_quality: 20     # Minimum base quality for variant calling
+  min_mapping_quality: 20  # Minimum mapping quality
+  min_depth: 10            # Minimum read depth at variant site
+  min_variant_frequency: 0.1  # Minimum allele frequency (10%)
+  min_strand_bias: 0.01    # Minimum strand bias
+  ploidy: 1                # Ploidy (1 for bacteria)
+  call_indels: true        # Call insertions/deletions
+  max_indel_length: 50     # Maximum indel length
+
+# Annotation Settings
+annotation:
+  annotation_format: auto  # Options: auto, gff, gbk, gtf
+  upstream_distance: 100   # Distance to consider upstream of gene
+  downstream_distance: 0   # Distance to consider downstream
+  include_intergenic: true # Annotate intergenic variants
+  protein_effect: true     # Calculate protein-level effects
+
+# Variant Filtering Settings
+filtering:
+  min_qual: 30.0           # Minimum QUAL score
+  min_depth: 10            # Minimum read depth
+  max_depth_factor: 3.0    # Max depth = mean_depth * factor
+  min_variant_frequency: 0.1
+  min_strand_depth: 2      # Minimum depth on each strand
+  exclude_regions: []      # BED file regions to exclude
+  include_only_regions: [] # BED file regions to include only
+
+# Output Settings
+output:
+  output_dir: results      # Output directory
+  prefix: sample           # Default output prefix
+  formats:                 # Output formats to generate
+    - csv
+    - tsv
+    - vcf
+  generate_html_report: true
+  keep_intermediate: false # Keep intermediate files
+  compress_output: true    # Compress output files
+
+# Visualization Settings
+visualization:
+  enabled: true            # Generate visualizations
+  plot_formats:            # Plot output formats
+    - png
+    - html
+  dpi: 150                 # Resolution for static plots
+  coverage_plot: true      # Generate coverage plot
+  mutation_spectrum: true  # Generate mutation spectrum
+  circos_plot: true        # Generate circular genome plot
+  quality_plots: true      # Generate QC plots
+  interactive: true        # Generate interactive HTML plots
+
+# Outlier Detection Settings
+outlier:
+  enabled: true
+  coverage_zscore_threshold: 3.0  # Z-score for coverage outliers
+  cluster_distance_threshold: 100 # bp for mutation clustering
+  hypermutation_threshold: 10     # Mutations per kb to flag
+  quality_drop_threshold: 0.5     # Quality drop threshold

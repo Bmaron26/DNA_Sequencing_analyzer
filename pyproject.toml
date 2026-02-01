@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bacterial-mutation-analyzer"
+version = "1.0.0"
+description = "A comprehensive pipeline for bacterial WGS mutation analysis"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "DNA Sequencing Lab"}
+]
+keywords = ["bioinformatics", "WGS", "mutation", "bacteria", "genomics", "AMR"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+    "biopython>=1.79",
+    "pandas>=1.3.0",
+    "numpy>=1.21.0",
+    "pysam>=0.19.0",
+    "matplotlib>=3.4.0",
+    "seaborn>=0.11.0",
+    "plotly>=5.0.0",
+    "scipy>=1.7.0",
+    "click>=8.0.0",
+    "rich>=10.0.0",
+    "pyyaml>=5.4.0",
+    "jinja2>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.950",
+]
+
+[project.scripts]
+bma = "bacterial_mutation_analyzer.cli:main"
+bacterial-mutation-analyzer = "bacterial_mutation_analyzer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/example/bacterial-mutation-analyzer"
+Documentation = "https://github.com/example/bacterial-mutation-analyzer#readme"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
