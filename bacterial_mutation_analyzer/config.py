@@ -29,7 +29,7 @@ class AlignmentConfig:
     aligner: str = "bwa"  # Options: bwa, minimap2, bowtie2
     threads: int = 4
     min_mapping_quality: int = 20
-    mark_duplicates: bool = True
+    mark_duplicates: bool = False  # Disabled by default for compatibility
     remove_duplicates: bool = False
     max_insert_size: int = 1000
 
