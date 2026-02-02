@@ -158,7 +158,7 @@ class FastaReader:
         opener = gzip.open if self.is_gzipped else open
         mode = 'rt' if self.is_gzipped else 'r'
 
-        with opener(self.filepath, mode) as f:
+        with opener(self.filepath, mode, encoding='utf-8', errors='replace') as f:
             header = None
             sequence_parts = []
 
@@ -247,7 +247,7 @@ class GffParser:
         opener = gzip.open if self.filepath.suffix == '.gz' else open
         mode = 'rt' if self.filepath.suffix == '.gz' else 'r'
 
-        with opener(self.filepath, mode) as f:
+        with opener(self.filepath, mode, encoding='utf-8', errors='replace') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
@@ -449,7 +449,7 @@ class VcfParser:
         opener = gzip.open if self.filepath.suffix == '.gz' else open
         mode = 'rt' if self.filepath.suffix == '.gz' else 'r'
 
-        with opener(self.filepath, mode) as f:
+        with opener(self.filepath, mode, encoding='utf-8', errors='replace') as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('##'):

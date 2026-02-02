@@ -81,8 +81,7 @@ class Aligner:
             try:
                 result = subprocess.run(
                     [tool, '--version'] if tool != 'bwa' else [tool],
-                    capture_output=True,
-                    text=True
+                    capture_output=True
                 )
                 tools[tool] = True
             except FileNotFoundError:
@@ -130,10 +129,11 @@ class Aligner:
         else:
             cmd = ['bwa', 'index', reference]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True)
 
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to index reference: {result.stderr}")
+            stderr_msg = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
+            raise RuntimeError(f"Failed to index reference: {stderr_msg}")
 
         # Also create samtools faidx
         subprocess.run(['samtools', 'faidx', reference], capture_output=True)
@@ -213,10 +213,10 @@ class Aligner:
         ] + fastq_files
 
         with open(output, 'w') as f:
-            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE)
 
         if result.returncode != 0:
-            raise RuntimeError(f"BWA alignment failed: {result.stderr}")
+            raise RuntimeError(f"BWA alignment failed: {result.stderr.decode('utf-8', errors='replace')}")
 
     def _align_minimap2(self, fastq_files: List[str], reference: str,
                         output: Path, is_paired: bool) -> None:
@@ -229,10 +229,10 @@ class Aligner:
         ] + fastq_files
 
         with open(output, 'w') as f:
-            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE)
 
         if result.returncode != 0:
-            raise RuntimeError(f"Minimap2 alignment failed: {result.stderr}")
+            raise RuntimeError(f"Minimap2 alignment failed: {result.stderr.decode('utf-8', errors='replace')}")
 
     def _align_bowtie2(self, fastq_files: List[str], reference: str,
                        output: Path, is_paired: bool) -> None:
