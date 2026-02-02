@@ -362,11 +362,13 @@ def visualize(result_file: str, output_dir: str, plot_format: str):
               help='Pipeline configuration file (YAML)')
 @click.option('-t', '--threads', default=4, type=int,
               help='Number of threads per sample')
+@click.option('--ancestral', type=str, default='',
+              help='Sample ID of ancestral/WT strain to filter out pre-existing variants')
 @click.option('-v', '--verbose', is_flag=True,
               help='Enable verbose output')
 def batch(experiment: str, reference: str, annotation: Optional[str],
           output: str, species: str, config: Optional[str],
-          threads: int, verbose: bool):
+          threads: int, ancestral: str, verbose: bool):
     """
     Run batch analysis for multiple samples with treatment groups.
 
@@ -496,6 +498,14 @@ def batch(experiment: str, reference: str, annotation: Optional[str],
             if os.path.exists(result_path):
                 comparison.load_sample_result(sample_id, result_path)
 
+        # Set ancestral sample for filtering if specified
+        if ancestral:
+            if ancestral in results:
+                anc_count = comparison.set_ancestral_sample(ancestral)
+                console.print(f"[cyan]Ancestral sample:[/cyan] {ancestral} ({anc_count} variants to filter)")
+            else:
+                console.print(f"[yellow]Warning: Ancestral sample '{ancestral}' not in results[/yellow]")
+
         # Generate comparison report
         comparison_path = os.path.join(output, "comparison_report.json")
         comparison.generate_comparison_report(comparison_path)
@@ -503,6 +513,17 @@ def batch(experiment: str, reference: str, annotation: Optional[str],
         # Export mutation matrix
         matrix_path = os.path.join(output, "mutation_matrix.csv")
         comparison.export_mutation_matrix(matrix_path)
+
+        # If ancestral sample is set, also export novel mutations report
+        if ancestral and ancestral in results:
+            novel_report_path = os.path.join(output, "novel_mutations_report.json")
+            comparison.generate_novel_mutations_report(novel_report_path)
+
+            novel_matrix_path = os.path.join(output, "novel_mutation_matrix.csv")
+            comparison.export_novel_mutations(novel_matrix_path)
+
+            console.print(f"[dim]Novel mutations report: {novel_report_path}[/dim]")
+            console.print(f"[dim]Novel mutations matrix: {novel_matrix_path}[/dim]")
 
         # Show convergent mutations
         convergent = comparison.get_convergent_mutations(min_samples=2)
@@ -683,8 +704,10 @@ def amr(result_file: str, species: str, output: Optional[str]):
               help='Output directory for comparison results')
 @click.option('--min-samples', default=2, type=int,
               help='Minimum samples for convergent mutation (default: 2)')
+@click.option('--ancestral', type=str, default='',
+              help='Sample ID of ancestral/WT strain to filter out pre-existing variants')
 def compare(results_dir: str, experiment: Optional[str], output: str,
-            min_samples: int):
+            min_samples: int, ancestral: str):
     """
     Compare mutations across multiple samples.
 
@@ -731,6 +754,14 @@ def compare(results_dir: str, experiment: Optional[str], output: str,
 
     console.print(f"[green]✓[/green] Loaded {loaded} samples")
 
+    # Set ancestral sample for filtering if specified
+    if ancestral:
+        if ancestral in comparison.sample_results:
+            anc_count = comparison.set_ancestral_sample(ancestral)
+            console.print(f"[cyan]Ancestral sample:[/cyan] {ancestral} ({anc_count} variants to filter)")
+        else:
+            console.print(f"[yellow]Warning: Ancestral sample '{ancestral}' not found[/yellow]")
+
     os.makedirs(output, exist_ok=True)
 
     # Generate reports
@@ -739,6 +770,17 @@ def compare(results_dir: str, experiment: Optional[str], output: str,
 
     matrix_path = os.path.join(output, "mutation_matrix.csv")
     comparison.export_mutation_matrix(matrix_path)
+
+    # If ancestral sample is set, also export novel mutations
+    if ancestral and ancestral in comparison.sample_results:
+        novel_report_path = os.path.join(output, "novel_mutations_report.json")
+        comparison.generate_novel_mutations_report(novel_report_path)
+
+        novel_matrix_path = os.path.join(output, "novel_mutation_matrix.csv")
+        comparison.export_novel_mutations(novel_matrix_path)
+
+        console.print(f"[dim]Novel mutations report: {novel_report_path}[/dim]")
+        console.print(f"[dim]Novel mutations matrix: {novel_matrix_path}[/dim]")
 
     # Show convergent mutations
     convergent = comparison.get_convergent_mutations(min_samples=min_samples)

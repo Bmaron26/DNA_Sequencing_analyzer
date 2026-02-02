@@ -141,6 +141,8 @@ class MultiSampleComparison:
         self.sample_results: Dict[str, Dict[str, Any]] = {}
         self.mutation_index: Dict[str, MutationOccurrence] = {}
         self.gene_mutations: Dict[str, List[MutationOccurrence]] = defaultdict(list)
+        self.ancestral_mutations: Set[str] = set()  # Mutation IDs present in ancestral/WT
+        self.ancestral_sample_id: Optional[str] = None
 
     def load_sample_result(self, sample_id: str, result_path: str,
                           group: Optional[str] = None) -> None:
@@ -607,4 +609,198 @@ class MultiSampleComparison:
                 writer.writerow(row)
 
         logger.info(f"Mutation matrix exported to {output_path}")
+        return output_path
+
+    def set_ancestral_sample(self, sample_id: str, result_path: Optional[str] = None) -> int:
+        """
+        Set a sample as the ancestral/wildtype reference for filtering.
+
+        Mutations present in the ancestral sample will be excluded from
+        evolved sample analysis (considered as pre-existing variants).
+
+        Args:
+            sample_id: Sample ID of the ancestral strain
+            result_path: Path to result JSON (optional if already loaded)
+
+        Returns:
+            Number of ancestral mutations indexed
+        """
+        # Load if not already loaded
+        if sample_id not in self.sample_results:
+            if result_path:
+                self.load_sample_result(sample_id, result_path, group="Ancestor")
+            else:
+                raise ValueError(f"Ancestral sample {sample_id} not loaded and no path provided")
+
+        self.ancestral_sample_id = sample_id
+        self.ancestral_mutations.clear()
+
+        # Index all mutations from ancestral sample
+        result = self.sample_results[sample_id]
+        for variant in result.get('variants', []):
+            mut_id = f"{variant.get('chromosome', '')}:{variant.get('position', '')}:" \
+                     f"{variant.get('reference', '')}>{variant.get('alternative', '')}"
+            self.ancestral_mutations.add(mut_id)
+
+        logger.info(f"Set {sample_id} as ancestral sample with {len(self.ancestral_mutations)} variants")
+        return len(self.ancestral_mutations)
+
+    def get_novel_mutations(self, sample_id: str) -> List[Dict[str, Any]]:
+        """
+        Get mutations in a sample that are NOT present in the ancestral sample.
+
+        These represent de novo mutations that arose during evolution.
+
+        Args:
+            sample_id: Sample to analyze
+
+        Returns:
+            List of novel variant dictionaries
+        """
+        if not self.ancestral_mutations:
+            logger.warning("No ancestral sample set - returning all mutations")
+            return self.sample_results.get(sample_id, {}).get('variants', [])
+
+        if sample_id not in self.sample_results:
+            raise ValueError(f"Sample {sample_id} not loaded")
+
+        novel = []
+        for variant in self.sample_results[sample_id].get('variants', []):
+            mut_id = f"{variant.get('chromosome', '')}:{variant.get('position', '')}:" \
+                     f"{variant.get('reference', '')}>{variant.get('alternative', '')}"
+
+            if mut_id not in self.ancestral_mutations:
+                novel.append(variant)
+
+        return novel
+
+    def get_filtered_mutation_index(self) -> Dict[str, MutationOccurrence]:
+        """
+        Get mutation index excluding ancestral mutations.
+
+        Returns:
+            Dictionary of mutation_id -> MutationOccurrence for non-ancestral mutations
+        """
+        if not self.ancestral_mutations:
+            return self.mutation_index
+
+        return {
+            mut_id: occ for mut_id, occ in self.mutation_index.items()
+            if mut_id not in self.ancestral_mutations
+        }
+
+    def export_novel_mutations(self, output_path: str,
+                               exclude_ancestral_sample: bool = True) -> str:
+        """
+        Export only novel (non-ancestral) mutations to CSV.
+
+        Args:
+            output_path: Output CSV path
+            exclude_ancestral_sample: Whether to exclude ancestral sample from output
+
+        Returns:
+            Path to generated file
+        """
+        import csv
+
+        samples = [s for s in self.sample_results.keys()
+                   if not exclude_ancestral_sample or s != self.ancestral_sample_id]
+
+        filtered_mutations = self.get_filtered_mutation_index()
+
+        with open(output_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+
+            # Header
+            header = ['mutation_id', 'chromosome', 'position', 'ref', 'alt',
+                     'gene', 'effect', 'amino_acid_change', 'is_novel'] + samples
+            writer.writerow(header)
+
+            # Data rows - only non-ancestral mutations
+            for mut_id, occ in filtered_mutations.items():
+                row = [
+                    mut_id,
+                    occ.chromosome,
+                    occ.position,
+                    occ.reference,
+                    occ.alternative,
+                    occ.gene_name or occ.locus_tag,
+                    occ.effect,
+                    occ.amino_acid_change,
+                    'yes',  # All are novel since we filtered
+                ]
+
+                # Add presence (frequency) for each sample
+                for sample in samples:
+                    freq = occ.frequencies.get(sample, 0)
+                    row.append(round(freq, 4) if freq > 0 else 0)
+
+                writer.writerow(row)
+
+        logger.info(f"Novel mutations exported to {output_path} "
+                    f"({len(filtered_mutations)} mutations, excluding {len(self.ancestral_mutations)} ancestral)")
+        return output_path
+
+    def generate_novel_mutations_report(self, output_path: str) -> str:
+        """
+        Generate a report focusing on novel (non-ancestral) mutations.
+
+        Useful for identifying mutations that arose during evolution experiments.
+
+        Args:
+            output_path: Output JSON path
+
+        Returns:
+            Path to generated report
+        """
+        filtered_mutations = self.get_filtered_mutation_index()
+
+        # Group by sample
+        sample_novel_counts = {}
+        for sample_id in self.sample_results.keys():
+            if sample_id == self.ancestral_sample_id:
+                continue
+            novel = self.get_novel_mutations(sample_id)
+            sample_novel_counts[sample_id] = {
+                'total_mutations': len(self.sample_results[sample_id].get('variants', [])),
+                'novel_mutations': len(novel),
+                'ancestral_mutations': len(self.sample_results[sample_id].get('variants', [])) - len(novel),
+            }
+
+        # Find convergent novel mutations
+        novel_convergent = []
+        for mut_id, occ in filtered_mutations.items():
+            # Exclude ancestral sample from count
+            non_anc_samples = [s for s in occ.samples if s != self.ancestral_sample_id]
+            if len(non_anc_samples) >= 2:
+                score = self._calculate_convergence_score(occ, within_group=True)
+                novel_convergent.append({
+                    'mutation_id': mut_id,
+                    'gene': occ.gene_name or occ.locus_tag,
+                    'amino_acid_change': occ.amino_acid_change,
+                    'effect': occ.effect,
+                    'samples': non_anc_samples,
+                    'sample_count': len(non_anc_samples),
+                    'convergence_score': round(score, 2),
+                    'interpretation': self._interpret_convergence(occ, score),
+                })
+
+        # Sort by convergence score
+        novel_convergent.sort(key=lambda x: x['convergence_score'], reverse=True)
+
+        report = {
+            'ancestral_sample': self.ancestral_sample_id,
+            'ancestral_variant_count': len(self.ancestral_mutations),
+            'total_samples_analyzed': len(self.sample_results) - (1 if self.ancestral_sample_id else 0),
+            'total_novel_mutations': len(filtered_mutations),
+            'sample_summaries': sample_novel_counts,
+            'convergent_novel_mutations': novel_convergent,
+            'note': 'Novel mutations are those NOT present in the ancestral/WT sample. '
+                    'These represent de novo mutations that arose during evolution.',
+        }
+
+        with open(output_path, 'w') as f:
+            json.dump(report, f, indent=2)
+
+        logger.info(f"Novel mutations report saved to {output_path}")
         return output_path
