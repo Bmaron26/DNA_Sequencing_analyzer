@@ -9,6 +9,7 @@ Supports:
 """
 
 import json
+import os
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Set, Tuple
@@ -557,7 +558,18 @@ class MultiSampleComparison:
                     })
             report['pairwise_comparisons'] = comparisons
 
-        with open(output_path, 'w') as f:
+        # Handle permission errors by adding timestamp if file is locked
+        from datetime import datetime
+        try:
+            f = open(output_path, 'w')
+        except PermissionError:
+            base, ext = os.path.splitext(output_path)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = f"{base}_{timestamp}{ext}"
+            logger.warning(f"Original file locked, saving to: {output_path}")
+            f = open(output_path, 'w')
+
+        with f:
             json.dump(report, f, indent=2)
 
         logger.info(f"Comparison report saved to {output_path}")
@@ -576,11 +588,23 @@ class MultiSampleComparison:
             Path to generated file
         """
         import csv
+        from datetime import datetime
 
         samples = list(self.sample_results.keys())
         mutations = list(self.mutation_index.keys())
 
-        with open(output_path, 'w', newline='') as f:
+        # Handle permission errors by adding timestamp if file is locked
+        try:
+            f = open(output_path, 'w', newline='')
+        except PermissionError:
+            # File might be open in Excel - add timestamp to filename
+            base, ext = os.path.splitext(output_path)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = f"{base}_{timestamp}{ext}"
+            logger.warning(f"Original file locked, saving to: {output_path}")
+            f = open(output_path, 'w', newline='')
+
+        with f:
             writer = csv.writer(f)
 
             # Header
@@ -702,13 +726,24 @@ class MultiSampleComparison:
             Path to generated file
         """
         import csv
+        from datetime import datetime
 
         samples = [s for s in self.sample_results.keys()
                    if not exclude_ancestral_sample or s != self.ancestral_sample_id]
 
         filtered_mutations = self.get_filtered_mutation_index()
 
-        with open(output_path, 'w', newline='') as f:
+        # Handle permission errors by adding timestamp if file is locked
+        try:
+            f = open(output_path, 'w', newline='')
+        except PermissionError:
+            base, ext = os.path.splitext(output_path)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = f"{base}_{timestamp}{ext}"
+            logger.warning(f"Original file locked, saving to: {output_path}")
+            f = open(output_path, 'w', newline='')
+
+        with f:
             writer = csv.writer(f)
 
             # Header
@@ -799,7 +834,18 @@ class MultiSampleComparison:
                     'These represent de novo mutations that arose during evolution.',
         }
 
-        with open(output_path, 'w') as f:
+        # Handle permission errors by adding timestamp if file is locked
+        from datetime import datetime
+        try:
+            f = open(output_path, 'w')
+        except PermissionError:
+            base, ext = os.path.splitext(output_path)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_path = f"{base}_{timestamp}{ext}"
+            logger.warning(f"Original file locked, saving to: {output_path}")
+            f = open(output_path, 'w')
+
+        with f:
             json.dump(report, f, indent=2)
 
         logger.info(f"Novel mutations report saved to {output_path}")

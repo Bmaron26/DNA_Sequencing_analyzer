@@ -1,0 +1,7 @@
+sample_id,group,replicate,origin,colony_count,fastq_r1,fastq_r2,notes
+Mel1,Melittin,1,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Mel1_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Mel1_2.fastq.gz,Melittin replicate 1
+Mel2,Melittin,2,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Mel2_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Mel2_2.fastq.gz,Melittin replicate 2
+Pex1,Pexiganan,1,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Pex1_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Pex1_2.fastq.gz,Pexiganan replicate 1
+Pex2,Pexiganan,2,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Pex2_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Pex2_2.fastq.gz,Pexiganan replicate 2
+Smp1,Smp,1,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Smp1_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Smp1_2.fastq.gz,Smp replicate 1
+Smp2,Smp,2,population,10,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Smp2_1.fastq.gz,/mnt/c/Users/hayouka-lab/Documents/Bar/3rd_evolution/WGS/samples/Smp2_2.fastq.gz,Smp replicate 2

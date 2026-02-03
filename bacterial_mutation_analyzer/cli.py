@@ -977,12 +977,55 @@ def _export_results(result, output_dir: str, sample_name: str, visualize: bool):
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Export mutations to CSV
+    # Export mutations to CSV with improved column format
     if result.variants:
         mutations_csv = os.path.join(output_dir, f"{sample_name}_mutations.csv")
         mutations_tsv = os.path.join(output_dir, f"{sample_name}_mutations.tsv")
 
+        # Create DataFrame with better column ordering
         df = pd.DataFrame(result.variants)
+
+        # Reorder and rename columns for clarity
+        column_order = [
+            'chromosome', 'position', 'variant_type', 'reference', 'alternative',
+            'depth', 'allele_frequency', 'quality',
+            'feature_type', 'strand', 'location_type',
+            'effect', 'effect_impact',
+            'codon_change', 'amino_acid_change', 'amino_acid_position',
+            'locus_tag', 'gene_name', 'gene_id', 'product'
+        ]
+
+        # Only include columns that exist
+        available_cols = [c for c in column_order if c in df.columns]
+        # Add any remaining columns not in our order
+        remaining_cols = [c for c in df.columns if c not in available_cols]
+        df = df[available_cols + remaining_cols]
+
+        # Rename columns for nicer output
+        rename_map = {
+            'chromosome': 'CHROM',
+            'position': 'POS',
+            'variant_type': 'TYPE',
+            'reference': 'REF',
+            'alternative': 'ALT',
+            'depth': 'DEPTH',
+            'allele_frequency': 'FREQ',
+            'quality': 'QUAL',
+            'feature_type': 'FTYPE',
+            'strand': 'STRAND',
+            'location_type': 'LOCATION',
+            'effect': 'EFFECT',
+            'effect_impact': 'IMPACT',
+            'codon_change': 'CODON_CHANGE',
+            'amino_acid_change': 'AA_CHANGE',
+            'amino_acid_position': 'AA_POS',
+            'locus_tag': 'LOCUS_TAG',
+            'gene_name': 'GENE',
+            'gene_id': 'GENE_ID',
+            'product': 'PRODUCT'
+        }
+        df = df.rename(columns=rename_map)
+
         df.to_csv(mutations_csv, index=False)
         df.to_csv(mutations_tsv, index=False, sep='\t')
 
