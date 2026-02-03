@@ -888,6 +888,127 @@ def species():
     console.print("\n[dim]Use --species flag with the species name in batch or amr commands[/dim]")
 
 
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('--source-gff', required=True, type=click.Path(exists=True),
+              help='Source annotation GFF (used in analysis)')
+@click.option('--target-gff', required=True, type=click.Path(exists=True),
+              help='Target annotation GFF (e.g., SH1000) for lookup')
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory for annotated files (default: same as results)')
+def crossref(results_dir: str, source_gff: str, target_gff: str, output_dir: Optional[str]):
+    """
+    Cross-reference mutations with another annotation (e.g., SH1000).
+
+    Adds target locus tags and gene names to mutation files, making it easier
+    to interpret results using a well-annotated reference genome.
+
+    \b
+    Example:
+    bma crossref results/ --source-gff consensus.gff3 --target-gff sh1000.gff
+    """
+    import json
+    import pandas as pd
+    from .analysis.gene_mapper import create_gene_mapping
+
+    console.print(Panel.fit(
+        "[bold blue]Cross-Reference Annotations[/bold blue]",
+        border_style="blue"
+    ))
+
+    # Create gene mapper
+    console.print("[cyan]Building gene mappings...[/cyan]")
+    mapper = create_gene_mapping(source_gff, target_gff)
+
+    console.print(f"  Source features: {len(mapper.source_features)}")
+    console.print(f"  Target features: {len(mapper.target_features)}")
+    console.print(f"  Successful mappings: {len(mapper.gene_mappings)}")
+
+    # Export mapping table
+    if output_dir is None:
+        output_dir = results_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    mapping_file = os.path.join(output_dir, "gene_mapping_table.csv")
+    mapper.export_mapping_table(mapping_file)
+    console.print(f"\n[dim]Gene mapping table: {mapping_file}[/dim]")
+
+    # Process each sample's results
+    results_path = Path(results_dir)
+    processed = 0
+
+    for sample_dir in results_path.iterdir():
+        if not sample_dir.is_dir():
+            continue
+
+        result_file = sample_dir / f"{sample_dir.name}_pipeline_result.json"
+        if not result_file.exists():
+            continue
+
+        console.print(f"[cyan]Processing {sample_dir.name}...[/cyan]")
+
+        # Load results
+        with open(result_file, 'r') as f:
+            result = json.load(f)
+
+        variants = result.get('variants', [])
+        if not variants:
+            console.print(f"  [dim]No variants to annotate[/dim]")
+            continue
+
+        # Add target annotations
+        annotated_variants = mapper.add_target_annotations_to_variants(variants)
+
+        # Save updated results
+        result['variants'] = annotated_variants
+        with open(result_file, 'w') as f:
+            json.dump(result, f, indent=2)
+
+        # Export updated CSV
+        df = pd.DataFrame(annotated_variants)
+
+        # Reorder columns for clarity
+        column_order = [
+            'chromosome', 'position', 'variant_type', 'reference', 'alternative',
+            'depth', 'allele_frequency', 'quality',
+            'gene_name', 'locus_tag', 'product',
+            'target_gene_name', 'target_locus_tag', 'target_product',
+            'mapping_confidence', 'mapping_type',
+            'effect', 'effect_impact', 'amino_acid_change',
+            'feature_type', 'strand', 'location_type'
+        ]
+        available_cols = [c for c in column_order if c in df.columns]
+        remaining_cols = [c for c in df.columns if c not in available_cols]
+        df = df[available_cols + remaining_cols]
+
+        # Rename columns
+        rename_map = {
+            'chromosome': 'CHROM', 'position': 'POS', 'variant_type': 'TYPE',
+            'reference': 'REF', 'alternative': 'ALT', 'depth': 'DEPTH',
+            'allele_frequency': 'FREQ', 'quality': 'QUAL',
+            'gene_name': 'GENE', 'locus_tag': 'LOCUS_TAG', 'product': 'PRODUCT',
+            'target_gene_name': 'SH1000_GENE', 'target_locus_tag': 'SH1000_LOCUS_TAG',
+            'target_product': 'SH1000_PRODUCT',
+            'mapping_confidence': 'MAPPING_CONF', 'mapping_type': 'MAPPING_TYPE',
+            'effect': 'EFFECT', 'effect_impact': 'IMPACT',
+            'amino_acid_change': 'AA_CHANGE',
+            'feature_type': 'FTYPE', 'strand': 'STRAND', 'location_type': 'LOCATION'
+        }
+        df = df.rename(columns=rename_map)
+
+        csv_path = sample_dir / f"{sample_dir.name}_mutations_crossref.csv"
+        df.to_csv(csv_path, index=False)
+
+        matched = len([v for v in annotated_variants if v.get('mapping_confidence', 0) > 0])
+        console.print(f"  Variants: {len(variants)}, Mapped: {matched}")
+        console.print(f"  [dim]Saved: {csv_path}[/dim]")
+
+        processed += 1
+
+    console.print(f"\n[green]✓[/green] Processed {processed} samples")
+    console.print("[dim]New columns added: SH1000_GENE, SH1000_LOCUS_TAG, SH1000_PRODUCT[/dim]")
+
+
 def _print_input_summary(fastq_files: List[str], reference: str,
                         annotation: Optional[str], sample_name: str):
     """Print input file summary."""
