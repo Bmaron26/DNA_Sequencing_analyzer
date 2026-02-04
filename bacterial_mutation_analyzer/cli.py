@@ -273,6 +273,190 @@ def check():
 
 
 @main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-r', '--reference', required=True, type=click.Path(exists=True),
+              help='Reference genome FASTA file')
+@click.option('-a', '--annotation', type=click.Path(exists=True),
+              help='Annotation file (GFF3 or GenBank format)')
+@click.option('--caller', default='freebayes', type=click.Choice(['bcftools', 'freebayes']),
+              help='Variant caller to use (default: freebayes)')
+@click.option('--min-alt-frac', default=0.01, type=float,
+              help='FreeBayes: minimum alternate allele fraction (default: 0.01)')
+@click.option('--min-alt-count', default=5, type=int,
+              help='FreeBayes: minimum alternate allele count (default: 5)')
+@click.option('--min-qual', default=100.0, type=float,
+              help='Minimum variant quality filter (default: 100)')
+@click.option('--min-depth', default=10, type=int,
+              help='Minimum read depth (default: 10)')
+@click.option('-v', '--verbose', is_flag=True,
+              help='Enable verbose output')
+def recall(results_dir: str, reference: str, annotation: Optional[str],
+           caller: str, min_alt_frac: float, min_alt_count: int,
+           min_qual: float, min_depth: int, verbose: bool):
+    """
+    Re-run variant calling on existing BAM files with different settings.
+
+    Uses existing BAM files from a previous analysis run and calls variants
+    with a different caller or parameters. Results are saved with the caller
+    name to distinguish from previous results.
+
+    \b
+    Example (FreeBayes with paper parameters):
+    bma recall results/ -r reference.fna -a genes.gff --caller freebayes \\
+        --min-alt-frac 0.01 --min-alt-count 5 --min-qual 100
+
+    \b
+    Example (bcftools):
+    bma recall results/ -r reference.fna -a genes.gff --caller bcftools
+    """
+    import json
+    from .pipeline.variant_calling import VariantCaller, VariantStats
+    from .pipeline.annotation import VariantAnnotator
+    from .config import VariantCallingConfig, FilterConfig
+
+    setup_logging(verbose)
+
+    console.print(Panel.fit(
+        f"[bold blue]Re-call Variants with {caller.upper()}[/bold blue]",
+        border_style="blue"
+    ))
+
+    console.print(f"[cyan]Caller:[/cyan] {caller}")
+    console.print(f"[cyan]Min alt fraction:[/cyan] {min_alt_frac}")
+    console.print(f"[cyan]Min alt count:[/cyan] {min_alt_count}")
+    console.print(f"[cyan]Min quality:[/cyan] {min_qual}")
+    console.print(f"[cyan]Min depth:[/cyan] {min_depth}")
+
+    # Find all sample directories with BAM files
+    results_path = Path(results_dir)
+    processed = 0
+    failed = []
+
+    for sample_dir in results_path.iterdir():
+        if not sample_dir.is_dir():
+            continue
+
+        # Find BAM file
+        alignment_dir = sample_dir / "alignment"
+        if not alignment_dir.exists():
+            continue
+
+        bam_files = list(alignment_dir.glob("*.sorted.bam"))
+        if not bam_files:
+            continue
+
+        bam_file = bam_files[0]
+        sample_name = sample_dir.name
+
+        console.print(f"\n[cyan]Processing {sample_name}...[/cyan]")
+
+        try:
+            # Configure variant caller
+            var_config = VariantCallingConfig(
+                caller=caller,
+                min_base_quality=20,
+                min_mapping_quality=20,
+                min_depth=min_depth,
+                min_variant_frequency=min_alt_frac,
+                ploidy=1
+            )
+
+            filter_config = FilterConfig(
+                min_qual=min_qual,
+                min_depth=min_depth
+            )
+
+            # Create output directory for new variants
+            var_dir = sample_dir / f"variants_{caller}"
+            var_dir.mkdir(exist_ok=True)
+
+            # Call variants
+            variant_caller = VariantCaller(
+                config=var_config,
+                filter_config=filter_config,
+                output_dir=str(var_dir)
+            )
+
+            vcf_file, var_stats = variant_caller.call_variants(
+                str(bam_file),
+                reference,
+                prefix=sample_name,
+                min_alternate_fraction=min_alt_frac,
+                min_alternate_count=min_alt_count,
+                min_qual_filter=min_qual
+            )
+
+            console.print(f"  Variants called: {var_stats.total_variants}")
+            console.print(f"  SNPs: {var_stats.snps}, Indels: {var_stats.insertions + var_stats.deletions}")
+
+            # Annotate variants if annotation file provided
+            variants = []
+            if annotation:
+                console.print("  Annotating variants...")
+                ann_dir = sample_dir / f"annotation_{caller}"
+                ann_dir.mkdir(exist_ok=True)
+
+                annotator = VariantAnnotator(output_dir=str(ann_dir))
+                annotated = annotator.annotate_variants(vcf_file, annotation, reference)
+                variants = [v.to_dict() for v in annotated]
+                console.print(f"  Annotated: {len(variants)} variants")
+            else:
+                # Just parse variants without annotation
+                variants = variant_caller.parse_variants(vcf_file)
+
+            # Update or create result file
+            result_file = sample_dir / f"{sample_name}_pipeline_result_{caller}.json"
+
+            # Load existing result if available to preserve other info
+            original_result = sample_dir / f"{sample_name}_pipeline_result.json"
+            if original_result.exists():
+                with open(original_result, 'r') as f:
+                    result = json.load(f)
+            else:
+                result = {'sample_name': sample_name}
+
+            # Update with new variant calling results
+            result[f'variant_caller'] = caller
+            result[f'variant_calling_params'] = {
+                'caller': caller,
+                'min_alt_frac': min_alt_frac,
+                'min_alt_count': min_alt_count,
+                'min_qual': min_qual,
+                'min_depth': min_depth
+            }
+            result['variant_stats'] = var_stats.to_dict()
+            result['variants'] = variants
+            result['vcf_file'] = vcf_file
+
+            # Save result
+            with open(result_file, 'w') as f:
+                json.dump(result, f, indent=2)
+
+            # Export to CSV
+            if variants:
+                import pandas as pd
+                df = pd.DataFrame(variants)
+                csv_file = sample_dir / f"{sample_name}_mutations_{caller}.csv"
+                df.to_csv(csv_file, index=False)
+                console.print(f"  [dim]Saved: {csv_file}[/dim]")
+
+            processed += 1
+
+        except Exception as e:
+            console.print(f"  [red]Failed: {e}[/red]")
+            failed.append(sample_name)
+
+    console.print(f"\n[green]✓[/green] Processed {processed} samples with {caller}")
+    if failed:
+        console.print(f"[yellow]Failed: {', '.join(failed)}[/yellow]")
+
+    console.print(f"\n[bold]Output files per sample:[/bold]")
+    console.print(f"  - variants_{caller}/{{sample}}.{caller}.filtered.vcf")
+    console.print(f"  - {{sample}}_mutations_{caller}.csv")
+    console.print(f"  - {{sample}}_pipeline_result_{caller}.json")
+
+
+@main.command()
 @click.argument('result_file', type=click.Path(exists=True))
 @click.option('-f', '--format', 'output_format', default='csv',
               type=click.Choice(['csv', 'tsv', 'json', 'excel']),

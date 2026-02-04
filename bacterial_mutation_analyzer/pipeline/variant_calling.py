@@ -92,7 +92,10 @@ class VariantCaller:
         return tools
 
     def call_variants(self, bam_file: str, reference: str,
-                     prefix: str = "sample") -> Tuple[str, VariantStats]:
+                     prefix: str = "sample",
+                     min_alternate_fraction: float = 0.01,
+                     min_alternate_count: int = 5,
+                     min_qual_filter: Optional[float] = None) -> Tuple[str, VariantStats]:
         """
         Call variants from aligned BAM file.
 
@@ -100,25 +103,33 @@ class VariantCaller:
             bam_file: Path to sorted, indexed BAM file
             reference: Path to reference FASTA file
             prefix: Output file prefix
+            min_alternate_fraction: For FreeBayes - min fraction of reads with alt (default: 0.01)
+            min_alternate_count: For FreeBayes - min number of reads with alt (default: 5)
+            min_qual_filter: Override minimum quality filter (default: use config)
 
         Returns:
             Tuple of (VCF file path, variant statistics)
         """
-        raw_vcf = self.output_dir / f"{prefix}.raw.vcf"
-        filtered_vcf = self.output_dir / f"{prefix}.filtered.vcf"
+        # Add caller name to output for distinction
+        caller_name = self.config.caller
+        raw_vcf = self.output_dir / f"{prefix}.{caller_name}.raw.vcf"
+        filtered_vcf = self.output_dir / f"{prefix}.{caller_name}.filtered.vcf"
 
-        logger.info(f"Calling variants using {self.config.caller}")
+        logger.info(f"Calling variants using {caller_name}")
 
         if self.config.caller == 'bcftools':
             self._call_bcftools(bam_file, reference, raw_vcf)
         elif self.config.caller == 'freebayes':
-            self._call_freebayes(bam_file, reference, raw_vcf)
+            self._call_freebayes(bam_file, reference, raw_vcf,
+                               min_alternate_fraction=min_alternate_fraction,
+                               min_alternate_count=min_alternate_count)
         else:
             self._call_bcftools(bam_file, reference, raw_vcf)
 
         # Filter variants
         logger.info("Filtering variants")
-        self._filter_variants(raw_vcf, filtered_vcf)
+        filter_qual = min_qual_filter if min_qual_filter is not None else self.filter_config.min_qual
+        self._filter_variants(raw_vcf, filtered_vcf, min_qual=filter_qual)
 
         # Calculate statistics
         stats = self._calculate_stats(filtered_vcf)
@@ -173,8 +184,25 @@ class VariantCaller:
         if call_proc.returncode != 0:
             raise RuntimeError(f"bcftools call failed: {stderr.decode()}")
 
-    def _call_freebayes(self, bam_file: str, reference: str, output_vcf: Path) -> None:
-        """Call variants using FreeBayes."""
+    def _call_freebayes(self, bam_file: str, reference: str, output_vcf: Path,
+                        min_alternate_fraction: float = 0.01,
+                        min_alternate_count: int = 5,
+                        pooled_discrete: bool = False,
+                        pooled_continuous: bool = True) -> None:
+        """
+        Call variants using FreeBayes.
+
+        Optimized for pooled/population samples (e.g., 10 colonies pooled).
+
+        Args:
+            bam_file: Path to BAM file
+            reference: Path to reference FASTA
+            output_vcf: Output VCF path
+            min_alternate_fraction: Minimum fraction of reads supporting alt allele (default: 0.01 = 1%)
+            min_alternate_count: Minimum number of reads supporting alt allele (default: 5)
+            pooled_discrete: Use pooled-discrete mode (known number of samples)
+            pooled_continuous: Use pooled-continuous mode (unknown mixture)
+        """
         cmd = [
             'freebayes',
             '-f', reference,
@@ -182,23 +210,35 @@ class VariantCaller:
             '--min-base-quality', str(self.config.min_base_quality),
             '--min-mapping-quality', str(self.config.min_mapping_quality),
             '--min-coverage', str(self.config.min_depth),
-            '--min-alternate-fraction', str(self.config.min_variant_frequency),
+            '--min-alternate-fraction', str(min_alternate_fraction),
+            '--min-alternate-count', str(min_alternate_count),
             bam_file
         ]
 
+        # Add pooled mode options for population samples
+        if pooled_continuous:
+            cmd.insert(-1, '--pooled-continuous')
+        elif pooled_discrete:
+            cmd.insert(-1, '--pooled-discrete')
+
+        logger.info(f"FreeBayes command: {' '.join(cmd)}")
+
         with open(output_vcf, 'w') as f:
-            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, text=True)
+            result = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE)
 
         if result.returncode != 0:
-            raise RuntimeError(f"FreeBayes failed: {result.stderr}")
+            stderr_msg = result.stderr.decode('utf-8', errors='replace') if result.stderr else ''
+            raise RuntimeError(f"FreeBayes failed: {stderr_msg}")
 
-    def _filter_variants(self, input_vcf: Path, output_vcf: Path) -> None:
+    def _filter_variants(self, input_vcf: Path, output_vcf: Path,
+                        min_qual: Optional[float] = None) -> None:
         """Filter variants based on quality criteria."""
         # Build filter expression
         filters = []
 
-        if self.filter_config.min_qual > 0:
-            filters.append(f'QUAL>={self.filter_config.min_qual}')
+        qual_threshold = min_qual if min_qual is not None else self.filter_config.min_qual
+        if qual_threshold > 0:
+            filters.append(f'QUAL>={qual_threshold}')
 
         if self.filter_config.min_depth > 0:
             filters.append(f'INFO/DP>={self.filter_config.min_depth}')
