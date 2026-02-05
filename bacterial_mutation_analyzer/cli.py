@@ -1292,13 +1292,20 @@ def compare_callers(results_dir: str, output_dir: Optional[str],
     # Print summary
     import pandas as pd
     if 'summary_csv' in outputs:
-        df = pd.read_csv(outputs['summary_csv'])
-        console.print(f"\n[bold]Summary:[/bold]")
-        console.print(f"  Samples compared: {len(df)}")
-        console.print(f"  Mean concordance: {df['concordance'].mean():.1%}")
-        console.print(f"  Total shared: {df['shared'].sum():,}")
-        console.print(f"  Total {caller1}-only: {df[f'{caller1}_only'].sum():,}")
-        console.print(f"  Total {caller2}-only: {df[f'{caller2}_only'].sum():,}")
+        try:
+            df = pd.read_csv(outputs['summary_csv'])
+            if len(df) > 0:
+                console.print(f"\n[bold]Summary:[/bold]")
+                console.print(f"  Samples compared: {len(df)}")
+                console.print(f"  Mean concordance: {df['concordance'].mean():.1%}")
+                console.print(f"  Total shared: {df['shared'].sum():,}")
+                console.print(f"  Total {caller1}-only: {df[f'{caller1}_only'].sum():,}")
+                console.print(f"  Total {caller2}-only: {df[f'{caller2}_only'].sum():,}")
+            else:
+                console.print(f"\n[yellow]No samples had both {caller1} and {caller2} results to compare.[/yellow]")
+                console.print(f"[dim]Make sure both callers were run on the same samples.[/dim]")
+        except Exception as e:
+            console.print(f"\n[yellow]Could not read comparison summary: {e}[/yellow]")
 
 
 @main.command()
@@ -1550,6 +1557,186 @@ def summarize(results_dir: str, output_dir: Optional[str],
     console.print(f"\n[green]✓[/green] Summary complete!")
     console.print(f"[bold]Total: {len(all_mutations)} mutations across {len(sample_counts)} samples[/bold]")
     console.print(f"[dim]All results saved to: {output_dir}[/dim]")
+
+
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory (default: results_dir/filtered)')
+@click.option('--caller', default='freebayes', type=click.Choice(['bcftools', 'freebayes']),
+              help='Which variant caller results to filter')
+@click.option('--min-samples', default=30, type=int,
+              help='Filter variants appearing in >= this many samples (default: 30)')
+@click.option('--total-samples', default=36, type=int,
+              help='Total number of samples for percentage calculation (default: 36)')
+def filter_ancestral(results_dir: str, output_dir: Optional[str],
+                     caller: str, min_samples: int, total_samples: int):
+    """
+    Filter out ancestral/pre-existing variants.
+
+    Removes variants that appear in many samples (likely present before
+    treatment/evolution). Creates new filtered mutation files.
+
+    \b
+    Example:
+    bma filter-ancestral results/ --caller freebayes --min-samples 30
+    """
+    import pandas as pd
+    from pathlib import Path
+    from collections import defaultdict
+
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, f'filtered_{caller}')
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    console.print(Panel.fit(
+        f"[bold blue]Filter Ancestral Variants[/bold blue]\n"
+        f"[dim]Remove variants in >= {min_samples}/{total_samples} samples[/dim]",
+        border_style="blue"
+    ))
+
+    # Load all mutations and count occurrences
+    results_path = Path(results_dir)
+    all_mutations = []
+    sample_files = {}
+
+    for sample_dir in results_path.iterdir():
+        if not sample_dir.is_dir():
+            continue
+
+        sample_name = sample_dir.name
+        if caller == 'bcftools':
+            mut_file = sample_dir / f"{sample_name}_mutations.csv"
+        else:
+            mut_file = sample_dir / f"{sample_name}_mutations_{caller}.csv"
+
+        if not mut_file.exists():
+            mut_file = sample_dir / f"{sample_name}_mutations.csv"
+            if not mut_file.exists():
+                continue
+
+        df = pd.read_csv(mut_file)
+        sample_files[sample_name] = {'file': mut_file, 'df': df}
+
+        for _, row in df.iterrows():
+            # Create variant key
+            pos = row.get('POS', row.get('position', 0))
+            ref = row.get('REF', row.get('reference', ''))
+            alt = row.get('ALT', row.get('alternative', ''))
+            all_mutations.append({
+                'sample': sample_name,
+                'key': f"{pos}_{ref}_{alt}",
+                'pos': pos,
+                'ref': ref,
+                'alt': alt,
+                'gene': row.get('GENE', row.get('gene_name', '')),
+                'effect': row.get('EFFECT', row.get('effect', ''))
+            })
+
+    if not all_mutations:
+        console.print("[red]No mutations found![/red]")
+        return
+
+    # Count variants across samples
+    variant_counts = defaultdict(set)
+    for mut in all_mutations:
+        variant_counts[mut['key']].add(mut['sample'])
+
+    # Identify ancestral variants
+    ancestral_variants = set()
+    for key, samples in variant_counts.items():
+        if len(samples) >= min_samples:
+            ancestral_variants.add(key)
+
+    console.print(f"\n[cyan]Found {len(variant_counts)} unique variants[/cyan]")
+    console.print(f"[yellow]Ancestral variants (in >= {min_samples} samples): {len(ancestral_variants)}[/yellow]")
+
+    # Show ancestral variants
+    if ancestral_variants:
+        console.print(f"\n[bold]Ancestral variants to remove:[/bold]")
+        table = Table(show_header=True)
+        table.add_column("Position")
+        table.add_column("Ref")
+        table.add_column("Alt")
+        table.add_column("Gene")
+        table.add_column("Samples", justify="right")
+
+        # Get details for ancestral variants
+        for key in list(ancestral_variants)[:10]:  # Show first 10
+            for mut in all_mutations:
+                if mut['key'] == key:
+                    table.add_row(
+                        str(mut['pos']),
+                        str(mut['ref']),
+                        str(mut['alt']),
+                        str(mut['gene'])[:20] if mut['gene'] else '-',
+                        str(len(variant_counts[key]))
+                    )
+                    break
+
+        console.print(table)
+        if len(ancestral_variants) > 10:
+            console.print(f"[dim]... and {len(ancestral_variants) - 10} more[/dim]")
+
+    # Filter each sample's mutations
+    console.print(f"\n[cyan]Creating filtered files...[/cyan]")
+    total_removed = 0
+    total_kept = 0
+
+    for sample_name, data in sample_files.items():
+        df = data['df']
+        original_count = len(df)
+
+        # Create variant keys for filtering
+        pos_col = 'POS' if 'POS' in df.columns else 'position'
+        ref_col = 'REF' if 'REF' in df.columns else 'reference'
+        alt_col = 'ALT' if 'ALT' in df.columns else 'alternative'
+
+        df['_variant_key'] = df.apply(
+            lambda r: f"{r[pos_col]}_{r[ref_col]}_{r[alt_col]}", axis=1
+        )
+
+        # Filter out ancestral variants
+        df_filtered = df[~df['_variant_key'].isin(ancestral_variants)].copy()
+        df_filtered = df_filtered.drop(columns=['_variant_key'])
+
+        removed = original_count - len(df_filtered)
+        total_removed += removed
+        total_kept += len(df_filtered)
+
+        # Save filtered file
+        output_file = os.path.join(output_dir, f"{sample_name}_mutations_filtered.csv")
+        df_filtered.to_csv(output_file, index=False)
+
+        if removed > 0:
+            console.print(f"  {sample_name}: {original_count} -> {len(df_filtered)} ({removed} removed)")
+
+    # Save ancestral variants list
+    ancestral_file = os.path.join(output_dir, "ancestral_variants.csv")
+    ancestral_rows = []
+    for key in ancestral_variants:
+        for mut in all_mutations:
+            if mut['key'] == key:
+                ancestral_rows.append({
+                    'position': mut['pos'],
+                    'ref': mut['ref'],
+                    'alt': mut['alt'],
+                    'gene': mut['gene'],
+                    'effect': mut['effect'],
+                    'sample_count': len(variant_counts[key])
+                })
+                break
+    pd.DataFrame(ancestral_rows).to_csv(ancestral_file, index=False)
+
+    console.print(f"\n[green]✓[/green] Filtering complete!")
+    console.print(f"[bold]Removed: {total_removed} variants | Kept: {total_kept} variants[/bold]")
+    console.print(f"[dim]Filtered files saved to: {output_dir}[/dim]")
+    console.print(f"[dim]Ancestral variants list: {ancestral_file}[/dim]")
+
+    console.print(f"\n[bold]Next steps:[/bold]")
+    console.print(f"  Run: bma summarize {output_dir} -e samples.csv --caller filtered")
+    console.print(f"  Or use the filtered CSV files directly for analysis")
 
 
 def _print_input_summary(fastq_files: List[str], reference: str,

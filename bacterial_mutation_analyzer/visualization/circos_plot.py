@@ -61,6 +61,20 @@ def extract_short_gene_name(gene: str, product: str = '', locus_tag: str = '') -
         Short gene name suitable for plotting
     """
     import re
+    import math
+
+    # Handle NaN/None values
+    if gene is None or (isinstance(gene, float) and math.isnan(gene)):
+        gene = ''
+    if product is None or (isinstance(product, float) and math.isnan(product)):
+        product = ''
+    if locus_tag is None or (isinstance(locus_tag, float) and math.isnan(locus_tag)):
+        locus_tag = ''
+
+    # Convert to string
+    gene = str(gene).strip()
+    product = str(product).strip()
+    locus_tag = str(locus_tag).strip()
 
     # Common gene name patterns (case-insensitive)
     gene_pattern = re.compile(r'\b([a-zA-Z]{2,4}[A-Z0-9]?)\b')
@@ -468,11 +482,20 @@ def create_treatment_circos_plots(results_dir: str, output_dir: str,
         df = pd.read_csv(mut_file)
         mutations = []
         for _, row in df.iterrows():
-            # Extract short gene name for display
+            # Extract short gene name for display (handle NaN)
             raw_gene = row.get('GENE', row.get('gene_name', ''))
             product = row.get('PRODUCT', row.get('product', ''))
             locus_tag = row.get('LOCUS_TAG', row.get('locus_tag', ''))
-            short_gene = extract_short_gene_name(raw_gene, product, locus_tag)
+
+            # Handle pandas NaN
+            if pd.isna(raw_gene):
+                raw_gene = ''
+            if pd.isna(product):
+                product = ''
+            if pd.isna(locus_tag):
+                locus_tag = ''
+
+            short_gene = extract_short_gene_name(str(raw_gene), str(product), str(locus_tag))
 
             mut = MutationMarker(
                 position=int(row.get('POS', row.get('position', 0))),
@@ -582,11 +605,20 @@ def create_combined_circos_plot(results_dir: str, output_path: str,
             key = f"{pos}_{row.get('REF', '')}_{row.get('ALT', '')}"
 
             if key not in mutations_by_group[group]:
-                # Extract short gene name
+                # Extract short gene name (handle NaN)
                 raw_gene = row.get('GENE', row.get('gene_name', ''))
                 product = row.get('PRODUCT', row.get('product', ''))
                 locus_tag = row.get('LOCUS_TAG', row.get('locus_tag', ''))
-                short_gene = extract_short_gene_name(raw_gene, product, locus_tag)
+
+                # Handle pandas NaN
+                if pd.isna(raw_gene):
+                    raw_gene = ''
+                if pd.isna(product):
+                    product = ''
+                if pd.isna(locus_tag):
+                    locus_tag = ''
+
+                short_gene = extract_short_gene_name(str(raw_gene), str(product), str(locus_tag))
 
                 mutations_by_group[group][key] = {
                     'position': pos,

@@ -90,14 +90,30 @@ class VariantCallerComparison:
 
             # Look for different caller results
             for caller in ['bcftools', 'freebayes']:
-                # Check for caller-specific mutation file
+                # Check for caller-specific mutation file first
                 mut_file = sample_dir / f"{sample_name}_mutations_{caller}.csv"
+
+                # For bcftools, also check the default filename (without caller suffix)
                 if not mut_file.exists() and caller == 'bcftools':
-                    # Try default name (bcftools is usually the default)
                     mut_file = sample_dir / f"{sample_name}_mutations.csv"
 
+                # Also check with just 'mutations' in variant subdirectory pattern
+                if not mut_file.exists():
+                    # Try variants directory
+                    var_dir = sample_dir / f"variants_{caller}"
+                    if var_dir.exists():
+                        vcf_files = list(var_dir.glob("*.filtered.vcf"))
+                        # If we have VCF but no CSV, skip for now
+                        pass
+
                 if mut_file.exists():
-                    self.samples[sample_name]['callers'][caller] = mut_file
+                    # Verify file is not empty
+                    try:
+                        df = pd.read_csv(mut_file, nrows=1)
+                        if len(df.columns) > 0:
+                            self.samples[sample_name]['callers'][caller] = mut_file
+                    except Exception:
+                        pass  # Skip invalid files
 
     def _load_variants(self, csv_path: Path) -> Dict[VariantKey, Dict]:
         """Load variants from CSV file."""
