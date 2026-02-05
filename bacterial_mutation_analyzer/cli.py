@@ -1193,6 +1193,365 @@ def crossref(results_dir: str, source_gff: str, target_gff: str, output_dir: Opt
     console.print("[dim]New columns added: SH1000_GENE, SH1000_LOCUS_TAG, SH1000_PRODUCT[/dim]")
 
 
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory (default: results_dir/visualizations)')
+@click.option('-e', '--experiment', type=click.Path(exists=True),
+              help='Experiment file (CSV/JSON) for sample grouping')
+@click.option('--caller', default='bcftools', type=click.Choice(['bcftools', 'freebayes']),
+              help='Which variant caller results to visualize')
+@click.option('--genome-size', default=2800000, type=int,
+              help='Genome size in bp (default: 2800000 for S. aureus)')
+def circos(results_dir: str, output_dir: Optional[str], experiment: Optional[str],
+           caller: str, genome_size: int):
+    """
+    Generate Circos-style circular genome plots.
+
+    Creates one circular plot per treatment group showing mutation positions
+    around the genome with different rings for each replicate.
+
+    \b
+    Example:
+    bma circos results/ -e samples.csv --caller freebayes
+    """
+    from .visualization.circos_plot import create_treatment_circos_plots, create_combined_circos_plot
+
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, 'circos_plots')
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    console.print(Panel.fit(
+        f"[bold blue]Circos Genome Plots[/bold blue]\n"
+        f"[dim]Caller: {caller}[/dim]",
+        border_style="blue"
+    ))
+
+    # Create per-treatment plots
+    console.print("[cyan]Creating per-treatment Circos plots...[/cyan]")
+    plots = create_treatment_circos_plots(
+        results_dir, output_dir,
+        experiment_file=experiment,
+        genome_size=genome_size,
+        caller=caller
+    )
+
+    console.print(f"[green]✓[/green] Created {len(plots)} treatment plots")
+
+    # Create combined convergent plot
+    console.print("[cyan]Creating combined convergent mutation plot...[/cyan]")
+    combined_path = os.path.join(output_dir, f"circos_combined_convergent_{caller}.png")
+    create_combined_circos_plot(
+        results_dir, combined_path,
+        experiment_file=experiment,
+        genome_size=genome_size,
+        caller=caller,
+        convergent_only=True
+    )
+
+    console.print(f"\n[green]✓[/green] All Circos plots saved to: {output_dir}")
+
+
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory (default: results_dir/caller_comparison)')
+@click.option('--caller1', default='bcftools',
+              help='First variant caller (default: bcftools)')
+@click.option('--caller2', default='freebayes',
+              help='Second variant caller (default: freebayes)')
+def compare_callers(results_dir: str, output_dir: Optional[str],
+                   caller1: str, caller2: str):
+    """
+    Compare variants between two different callers.
+
+    Creates Venn diagrams, concordance plots, and detailed comparison tables
+    showing shared and unique variants between callers.
+
+    \b
+    Example:
+    bma compare-callers results/ --caller1 bcftools --caller2 freebayes
+    """
+    from .analysis.variant_comparison import compare_callers as run_comparison
+
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, 'caller_comparison')
+
+    console.print(Panel.fit(
+        f"[bold blue]Variant Caller Comparison[/bold blue]\n"
+        f"[dim]{caller1} vs {caller2}[/dim]",
+        border_style="blue"
+    ))
+
+    outputs = run_comparison(results_dir, output_dir, caller1, caller2)
+
+    console.print(f"\n[green]✓[/green] Comparison complete!")
+    console.print(f"[dim]Results saved to: {output_dir}[/dim]")
+
+    # Print summary
+    import pandas as pd
+    if 'summary_csv' in outputs:
+        df = pd.read_csv(outputs['summary_csv'])
+        console.print(f"\n[bold]Summary:[/bold]")
+        console.print(f"  Samples compared: {len(df)}")
+        console.print(f"  Mean concordance: {df['concordance'].mean():.1%}")
+        console.print(f"  Total shared: {df['shared'].sum():,}")
+        console.print(f"  Total {caller1}-only: {df[f'{caller1}_only'].sum():,}")
+        console.print(f"  Total {caller2}-only: {df[f'{caller2}_only'].sum():,}")
+
+
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory (default: results_dir/functional_analysis)')
+@click.option('-a', '--annotation', type=click.Path(exists=True),
+              help='GFF3 annotation file for gene classification')
+@click.option('--caller', default='bcftools', type=click.Choice(['bcftools', 'freebayes']),
+              help='Which variant caller results to analyze')
+def functional(results_dir: str, output_dir: Optional[str],
+              annotation: Optional[str], caller: str):
+    """
+    Run functional enrichment analysis on mutations.
+
+    Classifies mutations into functional categories (cell membrane, cell wall,
+    transport, regulation, etc.) and tests for enrichment.
+
+    \b
+    Example:
+    bma functional results/ -a annotation.gff3 --caller freebayes
+    """
+    from .analysis.functional_enrichment import run_functional_analysis
+
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, 'functional_analysis')
+
+    console.print(Panel.fit(
+        f"[bold blue]Functional Enrichment Analysis[/bold blue]\n"
+        f"[dim]Caller: {caller}[/dim]",
+        border_style="blue"
+    ))
+
+    outputs = run_functional_analysis(results_dir, output_dir, annotation, caller)
+
+    console.print(f"\n[green]✓[/green] Analysis complete!")
+    console.print(f"[dim]Results saved to: {output_dir}[/dim]")
+
+    # Print enrichment summary
+    if 'enrichment_table' in outputs:
+        import pandas as pd
+        df = pd.read_csv(outputs['enrichment_table'])
+        sig = df[df['significant'] == True]
+        if not sig.empty:
+            console.print(f"\n[bold]Significantly enriched categories:[/bold]")
+            for _, row in sig.iterrows():
+                console.print(f"  [yellow]•[/yellow] {row['category']}: "
+                            f"{row['observed']} mutations, "
+                            f"{row['fold_enrichment']}x enrichment")
+        else:
+            console.print("\n[dim]No significantly enriched categories found[/dim]")
+
+
+@main.command()
+@click.argument('results_dir', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default=None,
+              help='Output directory (default: results_dir/summary)')
+@click.option('-e', '--experiment', type=click.Path(exists=True),
+              help='Experiment file for grouping')
+@click.option('-a', '--annotation', type=click.Path(exists=True),
+              help='GFF3 annotation file')
+@click.option('--caller', default='bcftools', type=click.Choice(['bcftools', 'freebayes']),
+              help='Which variant caller results to summarize')
+@click.option('--genome-size', default=2800000, type=int,
+              help='Genome size in bp')
+def summarize(results_dir: str, output_dir: Optional[str],
+              experiment: Optional[str], annotation: Optional[str],
+              caller: str, genome_size: int):
+    """
+    Generate comprehensive summary report with all visualizations.
+
+    Creates mutation spectrum, effect distribution, gene frequency plots,
+    Circos plots, and functional enrichment analysis.
+
+    \b
+    Example:
+    bma summarize results/ -e samples.csv -a annotation.gff3 --caller freebayes
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, f'summary_{caller}')
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    console.print(Panel.fit(
+        f"[bold blue]Comprehensive Summary Report[/bold blue]\n"
+        f"[dim]Caller: {caller}[/dim]",
+        border_style="blue"
+    ))
+
+    # Load all mutations
+    results_path = Path(results_dir)
+    all_mutations = []
+    sample_counts = {}
+
+    for sample_dir in results_path.iterdir():
+        if not sample_dir.is_dir():
+            continue
+
+        sample_name = sample_dir.name
+        if caller == 'bcftools':
+            mut_file = sample_dir / f"{sample_name}_mutations.csv"
+        else:
+            mut_file = sample_dir / f"{sample_name}_mutations_{caller}.csv"
+
+        if not mut_file.exists():
+            mut_file = sample_dir / f"{sample_name}_mutations.csv"
+            if not mut_file.exists():
+                continue
+
+        df = pd.read_csv(mut_file)
+        sample_counts[sample_name] = len(df)
+        for _, row in df.iterrows():
+            row_dict = row.to_dict()
+            row_dict['sample'] = sample_name
+            all_mutations.append(row_dict)
+
+    if not all_mutations:
+        console.print("[red]No mutations found![/red]")
+        return
+
+    df_all = pd.DataFrame(all_mutations)
+    console.print(f"[cyan]Loaded {len(all_mutations)} mutations from {len(sample_counts)} samples[/cyan]")
+
+    # 1. Summary statistics
+    console.print("\n[bold]1. Generating summary statistics...[/bold]")
+    stats = {
+        'total_mutations': len(all_mutations),
+        'total_samples': len(sample_counts),
+        'mean_mutations_per_sample': len(all_mutations) / len(sample_counts),
+        'unique_positions': df_all['POS'].nunique() if 'POS' in df_all else df_all['position'].nunique(),
+    }
+
+    # Count by type
+    type_col = 'TYPE' if 'TYPE' in df_all.columns else 'variant_type'
+    if type_col in df_all.columns:
+        stats['by_type'] = df_all[type_col].value_counts().to_dict()
+
+    # Count by effect
+    effect_col = 'EFFECT' if 'EFFECT' in df_all.columns else 'effect'
+    if effect_col in df_all.columns:
+        stats['by_effect'] = df_all[effect_col].value_counts().head(10).to_dict()
+
+    # Save stats
+    import json
+    stats_file = os.path.join(output_dir, 'summary_statistics.json')
+    with open(stats_file, 'w') as f:
+        json.dump(stats, f, indent=2, default=str)
+    console.print(f"  [dim]Saved: {stats_file}[/dim]")
+
+    # 2. Mutation spectrum plot
+    console.print("\n[bold]2. Creating mutation spectrum plot...[/bold]")
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+
+        fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+
+        # 2a. Mutations per sample
+        ax1 = axes[0, 0]
+        samples = list(sample_counts.keys())
+        counts = list(sample_counts.values())
+        ax1.bar(range(len(samples)), counts, color='steelblue')
+        ax1.set_xlabel('Sample')
+        ax1.set_ylabel('Number of Mutations')
+        ax1.set_title('Mutations per Sample')
+        ax1.set_xticks(range(len(samples)))
+        ax1.set_xticklabels(samples, rotation=45, ha='right', fontsize=8)
+
+        # 2b. Effect distribution
+        ax2 = axes[0, 1]
+        if effect_col in df_all.columns:
+            effect_counts = df_all[effect_col].value_counts().head(8)
+            ax2.barh(range(len(effect_counts)), effect_counts.values, color='coral')
+            ax2.set_yticks(range(len(effect_counts)))
+            ax2.set_yticklabels(effect_counts.index)
+            ax2.set_xlabel('Count')
+            ax2.set_title('Mutation Effects')
+            ax2.invert_yaxis()
+
+        # 2c. Top mutated genes
+        ax3 = axes[1, 0]
+        gene_col = 'GENE' if 'GENE' in df_all.columns else 'gene_name'
+        if gene_col in df_all.columns:
+            gene_counts = df_all[gene_col].value_counts().head(15)
+            gene_counts = gene_counts[gene_counts.index != '']
+            ax3.barh(range(len(gene_counts)), gene_counts.values, color='seagreen')
+            ax3.set_yticks(range(len(gene_counts)))
+            ax3.set_yticklabels(gene_counts.index, fontsize=9)
+            ax3.set_xlabel('Number of Mutations')
+            ax3.set_title('Most Frequently Mutated Genes')
+            ax3.invert_yaxis()
+
+        # 2d. Position distribution
+        ax4 = axes[1, 1]
+        pos_col = 'POS' if 'POS' in df_all.columns else 'position'
+        if pos_col in df_all.columns:
+            ax4.hist(df_all[pos_col], bins=50, color='purple', alpha=0.7)
+            ax4.set_xlabel('Genome Position')
+            ax4.set_ylabel('Number of Mutations')
+            ax4.set_title('Mutation Distribution Across Genome')
+
+        plt.suptitle(f'Mutation Summary ({caller})', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+
+        spectrum_file = os.path.join(output_dir, f'mutation_spectrum_{caller}.png')
+        plt.savefig(spectrum_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        console.print(f"  [dim]Saved: {spectrum_file}[/dim]")
+
+    except Exception as e:
+        console.print(f"  [yellow]Could not create spectrum plot: {e}[/yellow]")
+
+    # 3. Circos plots
+    console.print("\n[bold]3. Creating Circos plots...[/bold]")
+    try:
+        from .visualization.circos_plot import create_treatment_circos_plots
+
+        circos_dir = os.path.join(output_dir, 'circos')
+        plots = create_treatment_circos_plots(
+            results_dir, circos_dir,
+            experiment_file=experiment,
+            genome_size=genome_size,
+            caller=caller
+        )
+        console.print(f"  [dim]Created {len(plots)} Circos plots in {circos_dir}[/dim]")
+    except Exception as e:
+        console.print(f"  [yellow]Could not create Circos plots: {e}[/yellow]")
+
+    # 4. Functional enrichment
+    console.print("\n[bold]4. Running functional enrichment...[/bold]")
+    try:
+        from .analysis.functional_enrichment import run_functional_analysis
+
+        func_dir = os.path.join(output_dir, 'functional')
+        run_functional_analysis(results_dir, func_dir, annotation, caller)
+        console.print(f"  [dim]Saved functional analysis to {func_dir}[/dim]")
+    except Exception as e:
+        console.print(f"  [yellow]Could not run functional analysis: {e}[/yellow]")
+
+    # 5. Export combined mutation table
+    console.print("\n[bold]5. Exporting combined mutation table...[/bold]")
+    combined_file = os.path.join(output_dir, f'all_mutations_{caller}.csv')
+    df_all.to_csv(combined_file, index=False)
+    console.print(f"  [dim]Saved: {combined_file}[/dim]")
+
+    console.print(f"\n[green]✓[/green] Summary complete!")
+    console.print(f"[bold]Total: {len(all_mutations)} mutations across {len(sample_counts)} samples[/bold]")
+    console.print(f"[dim]All results saved to: {output_dir}[/dim]")
+
+
 def _print_input_summary(fastq_files: List[str], reference: str,
                         annotation: Optional[str], sample_name: str):
     """Print input file summary."""
