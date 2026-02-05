@@ -268,15 +268,21 @@ class FunctionalEnrichment:
             # Hypergeometric test (Fisher's exact)
             # Using binomial approximation for simplicity
             if total_mutations > 0 and background > 0:
-                p_value = stats.binom_test(
-                    observed, total_mutations,
-                    background / background_size,
-                    alternative='greater'
-                ) if observed > expected else stats.binom_test(
-                    observed, total_mutations,
-                    background / background_size,
-                    alternative='less'
-                )
+                prob = background / background_size
+                # Use binomtest (scipy >= 1.7) instead of deprecated binom_test
+                try:
+                    if observed > expected:
+                        result = stats.binomtest(observed, total_mutations, prob, alternative='greater')
+                    else:
+                        result = stats.binomtest(observed, total_mutations, prob, alternative='less')
+                    p_value = result.pvalue
+                except AttributeError:
+                    # Fallback for older scipy versions
+                    from scipy.stats import binom
+                    if observed > expected:
+                        p_value = 1 - binom.cdf(observed - 1, total_mutations, prob)
+                    else:
+                        p_value = binom.cdf(observed, total_mutations, prob)
             else:
                 p_value = 1.0
 

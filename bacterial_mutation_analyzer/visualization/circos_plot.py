@@ -39,6 +39,89 @@ class MutationMarker:
     gene: str = ''
     amino_acid_change: str = ''
     allele_frequency: float = 1.0
+    locus_tag: str = ''
+
+
+def extract_short_gene_name(gene: str, product: str = '', locus_tag: str = '') -> str:
+    """
+    Extract a short gene name from gene/product/locus_tag fields.
+
+    Prioritizes:
+    1. Standard gene names (e.g., agrC, clpX, mprF)
+    2. Gene name from product description
+    3. Short locus tag
+    4. Truncated product name as last resort
+
+    Args:
+        gene: Gene name field
+        product: Product description
+        locus_tag: Locus tag
+
+    Returns:
+        Short gene name suitable for plotting
+    """
+    import re
+
+    # Common gene name patterns (case-insensitive)
+    gene_pattern = re.compile(r'\b([a-zA-Z]{2,4}[A-Z0-9]?)\b')
+
+    # 1. If gene field looks like a standard gene name (2-5 chars, starts with lowercase)
+    if gene and len(gene) <= 6 and re.match(r'^[a-z]{2,4}[A-Z0-9]?$', gene):
+        return gene
+
+    # 2. Check if gene field contains a gene name (e.g., "agrC" in "accessory gene regulator C")
+    if gene:
+        # Look for capitalized gene-like pattern at end of string
+        match = re.search(r'\b([A-Z][a-z]{1,3}[A-Z0-9]?)\s*$', gene)
+        if match:
+            return match.group(1)
+        # Look for standard gene name pattern
+        match = re.search(r'\b([a-z]{2,4}[A-Z][0-9]?)\b', gene)
+        if match:
+            return match.group(1)
+
+    # 3. Extract gene name from product description
+    if product:
+        # Common patterns: "... protein ClpX", "... subunit AgrC", "... MprF"
+        # Look for capitalized gene name at end
+        match = re.search(r'\b([A-Z][a-z]{1,3}[A-Z0-9]?)\s*$', product)
+        if match:
+            name = match.group(1)
+            if len(name) >= 3:
+                return name
+
+        # Look for gene name pattern anywhere
+        match = re.search(r'\b([A-Z][a-z]{1,3}[A-Z0-9])\b', product)
+        if match:
+            return match.group(1)
+
+        # Try lowercase gene names (e.g., "rpoB", "gyrA")
+        match = re.search(r'\b([a-z]{3,4}[A-Z][0-9]?)\b', product)
+        if match:
+            return match.group(1)
+
+    # 4. Use locus tag if short enough
+    if locus_tag:
+        # Extract just the number part if it's like "SAOUHSC_00123"
+        match = re.search(r'_(\d+)$', locus_tag)
+        if match:
+            return f"#{match.group(1)}"
+        if len(locus_tag) <= 12:
+            return locus_tag
+
+    # 5. Last resort: truncate product name
+    if product:
+        # Get first meaningful word
+        words = product.split()
+        for word in words:
+            if len(word) >= 3 and word[0].isupper():
+                return word[:10]
+        return product[:10] + "..."
+
+    if gene:
+        return gene[:10] + "..." if len(gene) > 10 else gene
+
+    return "unknown"
 
 
 class CircosPlot:
@@ -244,12 +327,33 @@ class CircosPlot:
                    ha=ha, va=va)
 
     def _add_gene_labels(self, ax, mutated_genes: set, radius: float):
-        """Add labels for mutated genes."""
-        # Sort genes by position and spread labels to avoid overlap
+        """Add labels for mutated genes with overlap avoidance."""
+        # Sort genes by position
         genes_sorted = sorted(mutated_genes, key=lambda x: x[1])
 
+        # Group nearby genes to avoid overlap
+        min_angle_diff = 0.15  # Minimum angle difference between labels (radians)
+        placed_angles = []
+
         for gene_name, position in genes_sorted:
+            if not gene_name or gene_name == 'unknown':
+                continue
+
             angle = self._position_to_angle(position)
+
+            # Check if too close to already placed label
+            too_close = False
+            for placed_angle in placed_angles:
+                if abs(angle - placed_angle) < min_angle_diff:
+                    too_close = True
+                    break
+
+            if too_close:
+                continue  # Skip this label to avoid overlap
+
+            placed_angles.append(angle)
+
+            # Calculate label position
             x = radius * math.cos(angle)
             y = radius * math.sin(angle)
 
@@ -261,7 +365,7 @@ class CircosPlot:
             else:
                 ha = 'left'
 
-            ax.text(x, y, gene_name, fontsize=8, fontstyle='italic',
+            ax.text(x, y, gene_name, fontsize=7, fontstyle='italic',
                    rotation=rotation, ha=ha, va='center')
 
     def _add_legend(self, ax):
@@ -364,14 +468,21 @@ def create_treatment_circos_plots(results_dir: str, output_dir: str,
         df = pd.read_csv(mut_file)
         mutations = []
         for _, row in df.iterrows():
+            # Extract short gene name for display
+            raw_gene = row.get('GENE', row.get('gene_name', ''))
+            product = row.get('PRODUCT', row.get('product', ''))
+            locus_tag = row.get('LOCUS_TAG', row.get('locus_tag', ''))
+            short_gene = extract_short_gene_name(raw_gene, product, locus_tag)
+
             mut = MutationMarker(
                 position=int(row.get('POS', row.get('position', 0))),
                 sample=sample_name,
                 variant_type=row.get('TYPE', row.get('variant_type', 'SNP')),
                 effect=row.get('EFFECT', row.get('effect', '')),
-                gene=row.get('GENE', row.get('gene_name', '')),
+                gene=short_gene,  # Use short gene name
                 amino_acid_change=row.get('AA_CHANGE', row.get('amino_acid_change', '')),
-                allele_frequency=float(row.get('FREQ', row.get('allele_frequency', 1.0)))
+                allele_frequency=float(row.get('FREQ', row.get('allele_frequency', 1.0))),
+                locus_tag=locus_tag
             )
             mutations.append(mut)
 
@@ -471,10 +582,16 @@ def create_combined_circos_plot(results_dir: str, output_path: str,
             key = f"{pos}_{row.get('REF', '')}_{row.get('ALT', '')}"
 
             if key not in mutations_by_group[group]:
+                # Extract short gene name
+                raw_gene = row.get('GENE', row.get('gene_name', ''))
+                product = row.get('PRODUCT', row.get('product', ''))
+                locus_tag = row.get('LOCUS_TAG', row.get('locus_tag', ''))
+                short_gene = extract_short_gene_name(raw_gene, product, locus_tag)
+
                 mutations_by_group[group][key] = {
                     'position': pos,
                     'effect': row.get('EFFECT', row.get('effect', '')),
-                    'gene': row.get('GENE', row.get('gene_name', '')),
+                    'gene': short_gene,  # Use short gene name
                     'samples': [],
                     'aa_change': row.get('AA_CHANGE', row.get('amino_acid_change', ''))
                 }
