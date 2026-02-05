@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Compare mutation summary files from different variant callers.
-Usage: python compare_summary_files.py bcf_file.csv freebayes_file.csv [output_dir]
+Handles both matrix format (bcftools) and long format (freebayes).
+
+Usage: python compare_summary_files.py bcf_matrix.csv freebayes_long.csv [output_dir]
 """
 
 import sys
@@ -10,39 +12,78 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from collections import defaultdict
 
-def load_mutations(filepath):
-    """Load mutations from CSV file and create variant keys."""
+def load_matrix_format(filepath):
+    """Load mutations from matrix format CSV (bcftools mutation_matrix.csv)."""
     df = pd.read_csv(filepath)
 
-    # Detect column names (handle different naming conventions)
-    pos_col = 'POS' if 'POS' in df.columns else 'position' if 'position' in df.columns else None
-    ref_col = 'REF' if 'REF' in df.columns else 'reference' if 'reference' in df.columns else None
-    alt_col = 'ALT' if 'ALT' in df.columns else 'alternative' if 'alternative' in df.columns else None
+    # Matrix format has: mutation_id, chromosome, position, ref, alt, gene, effect, sample1, sample2, ...
+    # Sample columns have allele frequencies (0 = not present)
 
-    if pos_col is None:
-        # Try to find position-like column
-        for col in df.columns:
-            if 'pos' in col.lower():
-                pos_col = col
-                break
-
-    print(f"  Columns: {list(df.columns)}")
-    print(f"  Using: pos={pos_col}, ref={ref_col}, alt={alt_col}")
+    info_cols = ['mutation_id', 'chromosome', 'position', 'ref', 'alt', 'gene', 'effect']
+    sample_cols = [c for c in df.columns if c not in info_cols]
 
     variants = {}
-
     for _, row in df.iterrows():
-        if pos_col and pos_col in df.columns:
-            pos = row[pos_col]
-            ref = row.get(ref_col, '') if ref_col else ''
-            alt = row.get(alt_col, '') if alt_col else ''
+        pos = row['position']
+        ref = row['ref']
+        alt = row['alt']
+        key = f"{int(pos)}_{ref}_{alt}"
 
-            # Handle NaN
-            if pd.isna(pos):
-                continue
+        # Get which samples have this variant (non-zero value)
+        samples_with_variant = []
+        for sample in sample_cols:
+            if row[sample] > 0:
+                samples_with_variant.append(sample)
 
-            key = f"{int(pos)}_{ref}_{alt}"
-            variants[key] = row.to_dict()
+        variants[key] = {
+            'position': pos,
+            'ref': ref,
+            'alt': alt,
+            'gene': row['gene'],
+            'effect': row['effect'],
+            'samples': samples_with_variant,
+            'sample_count': len(samples_with_variant)
+        }
+
+    return variants, df, sample_cols
+
+def load_long_format(filepath):
+    """Load mutations from long format CSV (freebayes all_mutations.csv)."""
+    df = pd.read_csv(filepath)
+
+    # Detect column names
+    pos_col = 'POS' if 'POS' in df.columns else 'position'
+    ref_col = 'REF' if 'REF' in df.columns else 'reference' if 'reference' in df.columns else 'ref'
+    alt_col = 'ALT' if 'ALT' in df.columns else 'alternative' if 'alternative' in df.columns else 'alt'
+    sample_col = 'sample' if 'sample' in df.columns else None
+    gene_col = 'GENE' if 'GENE' in df.columns else 'gene_name' if 'gene_name' in df.columns else 'gene'
+    effect_col = 'EFFECT' if 'EFFECT' in df.columns else 'effect'
+
+    variants = {}
+    for _, row in df.iterrows():
+        pos = row[pos_col]
+        ref = row.get(ref_col, '')
+        alt = row.get(alt_col, '')
+
+        if pd.isna(pos):
+            continue
+
+        key = f"{int(pos)}_{ref}_{alt}"
+
+        if key not in variants:
+            variants[key] = {
+                'position': pos,
+                'ref': ref,
+                'alt': alt,
+                'gene': row.get(gene_col, ''),
+                'effect': row.get(effect_col, ''),
+                'samples': [],
+                'sample_count': 0
+            }
+
+        if sample_col and row.get(sample_col):
+            variants[key]['samples'].append(row[sample_col])
+            variants[key]['sample_count'] = len(variants[key]['samples'])
 
     return variants, df
 
@@ -59,114 +100,198 @@ def compare_variants(bcf_variants, fb_variants):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python compare_summary_files.py bcf_file.csv freebayes_file.csv [output_dir]")
+        print("Usage: python compare_summary_files.py bcf_matrix.csv freebayes_long.csv [output_dir]")
         sys.exit(1)
 
     bcf_file = sys.argv[1]
     fb_file = sys.argv[2]
-    output_dir = sys.argv[3] if len(sys.argv) > 3 else "comparison_output"
+    output_dir = sys.argv[3] if len(sys.argv) > 3 else "caller_comparison_results"
 
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"\n=== Variant Caller Comparison ===\n")
+    print(f"\n{'='*60}")
+    print("VARIANT CALLER COMPARISON: BCFtools vs FreeBayes")
+    print(f"{'='*60}\n")
     print(f"BCFtools file: {bcf_file}")
     print(f"FreeBayes file: {fb_file}")
     print()
 
-    # Load data
-    print("Loading BCFtools data...")
-    bcf_variants, bcf_df = load_mutations(bcf_file)
-    print(f"  Loaded {len(bcf_variants)} unique variants\n")
+    # Load BCFtools data (matrix format)
+    print("Loading BCFtools data (matrix format)...")
+    bcf_variants, bcf_df, sample_cols = load_matrix_format(bcf_file)
+    print(f"  Loaded {len(bcf_variants)} unique variants")
+    print(f"  Samples: {len(sample_cols)}\n")
 
-    print("Loading FreeBayes data...")
-    fb_variants, fb_df = load_mutations(fb_file)
+    # Load FreeBayes data (long format)
+    print("Loading FreeBayes data (long format)...")
+    fb_variants, fb_df = load_long_format(fb_file)
     print(f"  Loaded {len(fb_variants)} unique variants\n")
 
     # Compare
     shared, bcf_only, fb_only = compare_variants(bcf_variants, fb_variants)
 
     # Print summary
-    print("=" * 50)
+    print("=" * 60)
     print("COMPARISON SUMMARY")
-    print("=" * 50)
-    print(f"Shared variants:      {len(shared):>6}")
-    print(f"BCFtools only:        {len(bcf_only):>6}")
-    print(f"FreeBayes only:       {len(fb_only):>6}")
-    print(f"Total unique:         {len(shared) + len(bcf_only) + len(fb_only):>6}")
+    print("=" * 60)
+    print(f"{'Shared variants:':<30} {len(shared):>6}")
+    print(f"{'BCFtools only:':<30} {len(bcf_only):>6}")
+    print(f"{'FreeBayes only:':<30} {len(fb_only):>6}")
+    print(f"{'Total unique:':<30} {len(shared) + len(bcf_only) + len(fb_only):>6}")
     print()
 
-    if len(shared) + len(bcf_only) + len(fb_only) > 0:
-        concordance = len(shared) / (len(shared) + len(bcf_only) + len(fb_only))
-        print(f"Concordance (Jaccard): {concordance:.1%}")
+    total = len(shared) + len(bcf_only) + len(fb_only)
+    if total > 0:
+        concordance = len(shared) / total
+        print(f"{'Concordance (Jaccard):':<30} {concordance:.1%}")
     print()
 
     # Show BCFtools-only variants
     if bcf_only:
         print(f"\n--- BCFtools-only variants ({len(bcf_only)}) ---")
-        for i, key in enumerate(list(bcf_only)[:10]):
+        print("These variants were found by bcftools but NOT by freebayes:")
+        for i, key in enumerate(sorted(bcf_only)[:15]):
             v = bcf_variants[key]
-            gene = v.get('GENE', v.get('gene_name', v.get('gene', '-')))
-            print(f"  {key}: {gene}")
-        if len(bcf_only) > 10:
-            print(f"  ... and {len(bcf_only) - 10} more")
+            gene = v.get('gene', '-')[:25]
+            n_samples = v.get('sample_count', 0)
+            print(f"  {v['position']:>10} {v['ref']}->{v['alt']:<5} {gene:<25} (n={n_samples})")
+        if len(bcf_only) > 15:
+            print(f"  ... and {len(bcf_only) - 15} more")
 
     # Show FreeBayes-only variants
     if fb_only:
         print(f"\n--- FreeBayes-only variants ({len(fb_only)}) ---")
-        for i, key in enumerate(list(fb_only)[:10]):
+        print("These variants were found by freebayes but NOT by bcftools:")
+        for i, key in enumerate(sorted(fb_only)[:15]):
             v = fb_variants[key]
-            gene = v.get('GENE', v.get('gene_name', v.get('gene', '-')))
-            print(f"  {key}: {gene}")
-        if len(fb_only) > 10:
-            print(f"  ... and {len(fb_only) - 10} more")
+            gene = str(v.get('gene', '-'))[:25]
+            n_samples = v.get('sample_count', 0)
+            print(f"  {v['position']:>10} {v['ref']}->{v['alt']:<5} {gene:<25} (n={n_samples})")
+        if len(fb_only) > 15:
+            print(f"  ... and {len(fb_only) - 15} more")
+
+    # Show shared variants
+    if shared:
+        print(f"\n--- Shared variants ({len(shared)}) ---")
+        print("These variants were found by BOTH callers:")
+        for i, key in enumerate(sorted(shared)[:10]):
+            v = bcf_variants[key]
+            gene = v.get('gene', '-')[:25]
+            n_samples = v.get('sample_count', 0)
+            print(f"  {v['position']:>10} {v['ref']}->{v['alt']:<5} {gene:<25} (n={n_samples})")
+        if len(shared) > 10:
+            print(f"  ... and {len(shared) - 10} more")
 
     # Save detailed comparison
-    print(f"\nSaving detailed comparison to {output_dir}/...")
+    print(f"\n{'='*60}")
+    print(f"Saving detailed results to {output_dir}/...")
 
     # Shared variants
     if shared:
         shared_data = []
         for key in shared:
-            row = {'variant_key': key, 'status': 'shared'}
-            row.update({f'bcf_{k}': v for k, v in bcf_variants[key].items()})
+            row = {
+                'variant_key': key,
+                'position': bcf_variants[key]['position'],
+                'ref': bcf_variants[key]['ref'],
+                'alt': bcf_variants[key]['alt'],
+                'gene': bcf_variants[key]['gene'],
+                'effect': bcf_variants[key]['effect'],
+                'bcf_sample_count': bcf_variants[key]['sample_count'],
+                'fb_sample_count': fb_variants[key]['sample_count'],
+            }
             shared_data.append(row)
         pd.DataFrame(shared_data).to_csv(f"{output_dir}/shared_variants.csv", index=False)
-        print(f"  Saved: shared_variants.csv ({len(shared)} variants)")
+        print(f"  ✓ shared_variants.csv ({len(shared)} variants)")
 
     # BCFtools only
     if bcf_only:
-        bcf_only_data = [{'variant_key': k, **bcf_variants[k]} for k in bcf_only]
+        bcf_only_data = [{
+            'variant_key': k,
+            'position': bcf_variants[k]['position'],
+            'ref': bcf_variants[k]['ref'],
+            'alt': bcf_variants[k]['alt'],
+            'gene': bcf_variants[k]['gene'],
+            'effect': bcf_variants[k]['effect'],
+            'sample_count': bcf_variants[k]['sample_count'],
+            'samples': ';'.join(bcf_variants[k]['samples'])
+        } for k in bcf_only]
         pd.DataFrame(bcf_only_data).to_csv(f"{output_dir}/bcftools_only.csv", index=False)
-        print(f"  Saved: bcftools_only.csv ({len(bcf_only)} variants)")
+        print(f"  ✓ bcftools_only.csv ({len(bcf_only)} variants)")
 
     # FreeBayes only
     if fb_only:
-        fb_only_data = [{'variant_key': k, **fb_variants[k]} for k in fb_only]
+        fb_only_data = [{
+            'variant_key': k,
+            'position': fb_variants[k]['position'],
+            'ref': fb_variants[k]['ref'],
+            'alt': fb_variants[k]['alt'],
+            'gene': fb_variants[k]['gene'],
+            'effect': fb_variants[k]['effect'],
+            'sample_count': fb_variants[k]['sample_count'],
+            'samples': ';'.join(fb_variants[k]['samples'])
+        } for k in fb_only]
         pd.DataFrame(fb_only_data).to_csv(f"{output_dir}/freebayes_only.csv", index=False)
-        print(f"  Saved: freebayes_only.csv ({len(fb_only)} variants)")
+        print(f"  ✓ freebayes_only.csv ({len(fb_only)} variants)")
 
     # Create Venn diagram
     try:
         from matplotlib_venn import venn2
 
         fig, ax = plt.subplots(figsize=(10, 8))
-        venn2(subsets=(len(bcf_only), len(fb_only), len(shared)),
+        v = venn2(subsets=(len(bcf_only), len(fb_only), len(shared)),
               set_labels=('BCFtools', 'FreeBayes'), ax=ax)
-        ax.set_title('Variant Caller Comparison', fontsize=14, fontweight='bold')
+
+        # Style the diagram
+        if v.get_patch_by_id('10'):
+            v.get_patch_by_id('10').set_color('#377EB8')
+            v.get_patch_by_id('10').set_alpha(0.7)
+        if v.get_patch_by_id('01'):
+            v.get_patch_by_id('01').set_color('#E41A1C')
+            v.get_patch_by_id('01').set_alpha(0.7)
+        if v.get_patch_by_id('11'):
+            v.get_patch_by_id('11').set_color('#4DAF4A')
+            v.get_patch_by_id('11').set_alpha(0.7)
+
+        ax.set_title('Variant Caller Comparison\nBCFtools vs FreeBayes',
+                    fontsize=14, fontweight='bold')
 
         # Add summary text
-        summary_text = f"Concordance: {concordance:.1%}" if (len(shared) + len(bcf_only) + len(fb_only)) > 0 else ""
-        ax.text(0.5, -0.1, summary_text, transform=ax.transAxes,
-                ha='center', fontsize=12)
+        if total > 0:
+            summary_text = f"Concordance: {concordance:.1%}"
+            ax.text(0.5, -0.1, summary_text, transform=ax.transAxes,
+                    ha='center', fontsize=12, fontweight='bold')
 
         plt.savefig(f"{output_dir}/venn_comparison.png", dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  Saved: venn_comparison.png")
+        print(f"  ✓ venn_comparison.png")
     except ImportError:
         print("  (matplotlib-venn not available, skipping Venn diagram)")
+    except Exception as e:
+        print(f"  (Could not create Venn: {e})")
 
-    print(f"\n✓ Comparison complete!")
-    print(f"  Results saved to: {output_dir}/")
+    print(f"\n{'='*60}")
+    print("✓ COMPARISON COMPLETE!")
+    print(f"{'='*60}")
+    print(f"\nResults saved to: {output_dir}/")
+
+    # Interpretation
+    print("\n--- INTERPRETATION ---")
+    if len(bcf_only) == 0 and len(fb_only) == 0:
+        print("Perfect concordance! Both callers found the same variants.")
+    elif concordance > 0.9:
+        print("Excellent concordance (>90%). Minor differences may be due to")
+        print("different filtering parameters.")
+    elif concordance > 0.7:
+        print("Good concordance (70-90%). FreeBayes may have found additional")
+        print("low-frequency variants in your pooled samples.")
+    else:
+        print("Moderate concordance. Review the unique variants from each caller")
+        print("to understand the differences.")
+
+    if len(fb_only) > len(bcf_only):
+        print(f"\nFreeBayes found {len(fb_only)} additional variants not in bcftools.")
+        print("These may be low-frequency variants in your pooled samples.")
 
 if __name__ == "__main__":
     main()
