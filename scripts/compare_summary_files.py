@@ -51,19 +51,74 @@ def load_long_format(filepath):
     """Load mutations from long format CSV (freebayes all_mutations.csv)."""
     df = pd.read_csv(filepath)
 
-    # Detect column names
-    pos_col = 'POS' if 'POS' in df.columns else 'position'
-    ref_col = 'REF' if 'REF' in df.columns else 'reference' if 'reference' in df.columns else 'ref'
-    alt_col = 'ALT' if 'ALT' in df.columns else 'alternative' if 'alternative' in df.columns else 'alt'
-    sample_col = 'sample' if 'sample' in df.columns else None
-    gene_col = 'GENE' if 'GENE' in df.columns else 'gene_name' if 'gene_name' in df.columns else 'gene'
-    effect_col = 'EFFECT' if 'EFFECT' in df.columns else 'effect'
+    # Detect column names - check what columns exist
+    print(f"  Columns found: {list(df.columns)[:10]}...")
+
+    # Position column
+    if 'POS' in df.columns:
+        pos_col = 'POS'
+    elif 'position' in df.columns:
+        pos_col = 'position'
+    else:
+        pos_col = 'pos'
+
+    # Reference column
+    if 'REF' in df.columns:
+        ref_col = 'REF'
+    elif 'reference' in df.columns:
+        ref_col = 'reference'
+    else:
+        ref_col = 'ref'
+
+    # Alternative column
+    if 'ALT' in df.columns:
+        alt_col = 'ALT'
+    elif 'alternative' in df.columns:
+        alt_col = 'alternative'
+    else:
+        alt_col = 'alt'
+
+    # Sample column
+    if 'sample' in df.columns:
+        sample_col = 'sample'
+    elif 'SAMPLE' in df.columns:
+        sample_col = 'SAMPLE'
+    else:
+        sample_col = None
+
+    # Gene column
+    if 'GENE' in df.columns:
+        gene_col = 'GENE'
+    elif 'gene_name' in df.columns:
+        gene_col = 'gene_name'
+    elif 'gene' in df.columns:
+        gene_col = 'gene'
+    else:
+        gene_col = None
+
+    # Effect column
+    if 'EFFECT' in df.columns:
+        effect_col = 'EFFECT'
+    elif 'effect' in df.columns:
+        effect_col = 'effect'
+    else:
+        effect_col = None
+
+    print(f"  Using columns: pos={pos_col}, ref={ref_col}, alt={alt_col}, sample={sample_col}")
 
     variants = {}
     for _, row in df.iterrows():
         pos = row[pos_col]
-        ref = row.get(ref_col, '')
-        alt = row.get(alt_col, '')
+
+        # Use direct indexing instead of .get() for pandas Series
+        ref = row[ref_col] if ref_col in df.columns else ''
+        alt = row[alt_col] if alt_col in df.columns else ''
+
+        # Handle NaN values
+        if pd.isna(ref):
+            ref = ''
+        if pd.isna(alt):
+            alt = ''
 
         if pd.isna(pos):
             continue
@@ -71,19 +126,29 @@ def load_long_format(filepath):
         key = f"{int(pos)}_{ref}_{alt}"
 
         if key not in variants:
+            # Get gene and effect with proper null handling
+            gene = row[gene_col] if gene_col and gene_col in df.columns else ''
+            effect = row[effect_col] if effect_col and effect_col in df.columns else ''
+            if pd.isna(gene):
+                gene = ''
+            if pd.isna(effect):
+                effect = ''
+
             variants[key] = {
                 'position': pos,
                 'ref': ref,
                 'alt': alt,
-                'gene': row.get(gene_col, ''),
-                'effect': row.get(effect_col, ''),
+                'gene': gene,
+                'effect': effect,
                 'samples': [],
                 'sample_count': 0
             }
 
-        if sample_col and row.get(sample_col):
-            variants[key]['samples'].append(row[sample_col])
-            variants[key]['sample_count'] = len(variants[key]['samples'])
+        if sample_col and sample_col in df.columns:
+            sample_val = row[sample_col]
+            if not pd.isna(sample_val):
+                variants[key]['samples'].append(sample_val)
+                variants[key]['sample_count'] = len(variants[key]['samples'])
 
     return variants, df
 
