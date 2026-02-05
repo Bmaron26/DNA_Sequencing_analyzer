@@ -222,8 +222,8 @@ class CircosPlot:
                 return color
         return self.EFFECT_COLORS['unknown']
 
-    def plot(self, output_path: str, figsize: Tuple[int, int] = (12, 12),
-             dpi: int = 150, show_genes: bool = True,
+    def plot(self, output_path: str, figsize: Tuple[int, int] = (14, 14),
+             dpi: int = 200, show_genes: bool = True,
              show_legend: bool = True):
         """
         Generate the circular plot.
@@ -246,13 +246,13 @@ class CircosPlot:
         track_width = 0.08 if n_tracks <= 6 else 0.05
         gap = 0.02
 
-        # Draw outer circle (genome backbone)
+        # Draw outer circle (genome backbone) - THICKER
         backbone = plt.Circle((0, 0), outer_radius + 0.02,
-                              fill=False, color='black', linewidth=2)
+                              fill=False, color='black', linewidth=3)
         ax.add_patch(backbone)
 
-        # Draw position markers (0, 1MB, 2MB, etc.)
-        self._draw_position_markers(ax, outer_radius + 0.05)
+        # Draw position markers (0, 1MB, 2MB, etc.) - MOVED OUTWARD
+        self._draw_position_markers(ax, outer_radius + 0.12)
 
         # Draw each track (ring)
         mutated_genes = set()
@@ -260,9 +260,9 @@ class CircosPlot:
             ring_idx = track['ring_index']
             radius = outer_radius - (ring_idx * (track_width + gap))
 
-            # Draw ring background
+            # Draw ring background - THICKER LINES
             ring = plt.Circle((0, 0), radius, fill=False,
-                             color='#EEEEEE', linewidth=0.5)
+                             color='#CCCCCC', linewidth=1.5)
             ax.add_patch(ring)
 
             # Plot mutations
@@ -285,16 +285,17 @@ class CircosPlot:
                 else:
                     marker = '*'  # Star for non-synonymous/other
 
-                ax.plot(x, y, marker=marker, color=color, markersize=8,
-                       markeredgecolor='black', markeredgewidth=0.5)
+                # BIGGER MARKERS for publication
+                ax.plot(x, y, marker=marker, color=color, markersize=14,
+                       markeredgecolor='black', markeredgewidth=0.8)
 
                 # Track mutated genes for labeling
                 if mut.gene:
                     mutated_genes.add((mut.gene, mut.position))
 
-        # Add gene labels for mutated genes
+        # Add gene labels for mutated genes - MOVED FURTHER OUT
         if show_genes and mutated_genes:
-            self._add_gene_labels(ax, mutated_genes, outer_radius + 0.15)
+            self._add_gene_labels(ax, mutated_genes, outer_radius + 0.22)
 
         # Add title
         if self.title:
@@ -328,25 +329,25 @@ class CircosPlot:
             x = radius * math.cos(angle)
             y = radius * math.sin(angle)
 
-            # Draw tick
-            x_inner = (radius - 0.03) * math.cos(angle)
-            y_inner = (radius - 0.03) * math.sin(angle)
-            ax.plot([x_inner, x], [y_inner, y], 'k-', linewidth=1)
+            # Draw tick - THICKER
+            x_inner = (radius - 0.04) * math.cos(angle)
+            y_inner = (radius - 0.04) * math.sin(angle)
+            ax.plot([x_inner, x], [y_inner, y], 'k-', linewidth=2)
 
-            # Add label
+            # Add label - BOLD and LARGER
             label = f"{i} MB" if i > 0 else "0 MB"
             ha = 'left' if x > 0 else 'right' if x < 0 else 'center'
             va = 'bottom' if y > 0 else 'top' if y < 0 else 'center'
-            ax.text(x * 1.08, y * 1.08, label, fontsize=9,
-                   ha=ha, va=va)
+            ax.text(x * 1.06, y * 1.06, label, fontsize=11,
+                   ha=ha, va=va, fontweight='bold')
 
     def _add_gene_labels(self, ax, mutated_genes: set, radius: float):
         """Add labels for mutated genes with overlap avoidance."""
         # Sort genes by position
         genes_sorted = sorted(mutated_genes, key=lambda x: x[1])
 
-        # Group nearby genes to avoid overlap
-        min_angle_diff = 0.15  # Minimum angle difference between labels (radians)
+        # Group nearby genes to avoid overlap - INCREASED SPACING
+        min_angle_diff = 0.18  # Minimum angle difference between labels (radians)
         placed_angles = []
 
         for gene_name, position in genes_sorted:
@@ -379,7 +380,8 @@ class CircosPlot:
             else:
                 ha = 'left'
 
-            ax.text(x, y, gene_name, fontsize=7, fontstyle='italic',
+            # LARGER FONT for publication
+            ax.text(x, y, gene_name, fontsize=10, fontstyle='italic',
                    rotation=rotation, ha=ha, va='center')
 
     def _add_legend(self, ax):
