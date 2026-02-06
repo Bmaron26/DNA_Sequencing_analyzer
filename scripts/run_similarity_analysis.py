@@ -4,22 +4,26 @@ Standalone script for mutation profile similarity analysis.
 
 Calculates Dice similarity between mutation profiles and creates:
 1. Sample-level clustered heatmap
-2. Treatment-level heatmap
-3. Similarity network visualization
+2. Treatment-level heatmap (aggregated across replicates)
+3. Sample-level similarity network (individual replicates)
+4. Treatment-level similarity network (aggregated)
+
+Similarity is based on mutations in the SAME GENE (not exact position),
+excluding synonymous mutations.
 
 Usage:
     python scripts/run_similarity_analysis.py <input_file> <output_dir>
 
 Example:
     python scripts/run_similarity_analysis.py \
-        results_single_amps/combined_analysis/freebayes/all_mutations_freebayes.csv \
+        results/summary_freebayes/all_mutations_freebayes_filtered.csv \
         similarity_results
 """
 
 import sys
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Set
 from itertools import combinations
 from collections import defaultdict
 
@@ -48,11 +52,32 @@ def dice_similarity(set1: set, set2: set) -> float:
     return (2 * intersection) / (len(set1) + len(set2))
 
 
-def load_long_format(filepath: Path) -> Dict[str, set]:
-    """Load mutations from long format CSV and extract mutation sets per sample."""
+def is_synonymous(effect: str) -> bool:
+    """Check if a mutation effect is synonymous (silent)."""
+    if pd.isna(effect):
+        return False
+    effect_lower = str(effect).lower()
+    synonymous_terms = ['synonymous', 'silent', 'syn_coding']
+    return any(term in effect_lower for term in synonymous_terms)
+
+
+def load_long_format(filepath: Path, use_genes: bool = True) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    """
+    Load mutations from long format CSV and extract mutation sets per sample.
+
+    Args:
+        filepath: Path to CSV file
+        use_genes: If True, use gene names for similarity (excluding synonymous).
+                   If False, use exact position+ref+alt.
+
+    Returns:
+        sample_genes: Dict mapping sample -> set of mutated genes (non-synonymous)
+        sample_positions: Dict mapping sample -> set of position keys (for reference)
+    """
     df = pd.read_csv(filepath)
 
-    print(f"  Columns found: {list(df.columns)[:10]}...")
+    print(f"  Columns found: {list(df.columns)[:15]}...")
+    print(f"  Total rows: {len(df)}")
 
     # Detect column names
     if 'position' in df.columns:
@@ -83,26 +108,72 @@ def load_long_format(filepath: Path) -> Dict[str, set]:
     else:
         raise ValueError("No sample column found in file")
 
-    print(f"  Using columns: pos={pos_col}, ref={ref_col}, alt={alt_col}, sample={sample_col}")
+    # Gene column
+    if 'gene_name' in df.columns:
+        gene_col = 'gene_name'
+    elif 'GENE' in df.columns:
+        gene_col = 'GENE'
+    elif 'gene' in df.columns:
+        gene_col = 'gene'
+    elif 'locus_tag' in df.columns:
+        gene_col = 'locus_tag'
+    else:
+        gene_col = None
+        print("  WARNING: No gene column found, falling back to position-based similarity")
 
-    # Create variant keys and group by sample
-    sample_mutations = {}
+    # Effect column (to filter synonymous)
+    if 'effect' in df.columns:
+        effect_col = 'effect'
+    elif 'EFFECT' in df.columns:
+        effect_col = 'EFFECT'
+    else:
+        effect_col = None
+
+    print(f"  Using columns: sample={sample_col}, gene={gene_col}, effect={effect_col}")
+
+    # Create mutation sets per sample
+    sample_genes = {}  # Gene-based (non-synonymous)
+    sample_positions = {}  # Position-based (all mutations)
+
+    synonymous_count = 0
+    no_gene_count = 0
+
     for _, row in df.iterrows():
         sample = row[sample_col]
         if pd.isna(sample):
             continue
 
+        # Initialize sample sets
+        if sample not in sample_genes:
+            sample_genes[sample] = set()
+            sample_positions[sample] = set()
+
+        # Position-based key
         pos = row[pos_col]
         ref = row[ref_col] if not pd.isna(row[ref_col]) else ''
         alt = row[alt_col] if not pd.isna(row[alt_col]) else ''
+        pos_key = f"{int(pos)}_{ref}_{alt}"
+        sample_positions[sample].add(pos_key)
 
-        key = f"{int(pos)}_{ref}_{alt}"
+        # Gene-based key (excluding synonymous)
+        if effect_col and is_synonymous(row.get(effect_col, '')):
+            synonymous_count += 1
+            continue
 
-        if sample not in sample_mutations:
-            sample_mutations[sample] = set()
-        sample_mutations[sample].add(key)
+        if gene_col and gene_col in df.columns:
+            gene = row[gene_col]
+            if not pd.isna(gene) and str(gene).strip():
+                sample_genes[sample].add(str(gene).strip())
+            else:
+                no_gene_count += 1
+        else:
+            # Fallback to position if no gene column
+            sample_genes[sample].add(pos_key)
 
-    return sample_mutations
+    print(f"  Excluded {synonymous_count} synonymous mutations")
+    print(f"  {no_gene_count} mutations had no gene annotation")
+
+    return sample_genes, sample_positions
 
 
 def calculate_pairwise_similarity(sample_mutations: Dict[str, set]) -> pd.DataFrame:
@@ -317,9 +388,128 @@ def create_treatment_heatmap(treatment_sim: pd.DataFrame, output_path: Path):
     print(f"  Saved treatment heatmap to {output_path}")
 
 
+def create_sample_network(similarity_matrix: pd.DataFrame, output_path: Path, min_edge_weight: float = 0.3):
+    """
+    Create a network visualization of sample (replicate) similarities.
+
+    - Higher similarity = nodes closer together
+    - Edge thickness = similarity strength
+    - Node color = treatment (using EVO_COLOR_MAP)
+    - Shows individual replicates
+    """
+    import matplotlib.pyplot as plt
+    import networkx as nx
+
+    samples = similarity_matrix.index.tolist()
+    G = nx.Graph()
+
+    # Add nodes with treatment info
+    for s in samples:
+        treatment = extract_treatment_from_sample(s)
+        G.add_node(s, treatment=treatment)
+
+    # Add edges with similarity as weight
+    for i, s1 in enumerate(samples):
+        for j, s2 in enumerate(samples):
+            if i < j:
+                sim = similarity_matrix.loc[s1, s2]
+                if sim >= min_edge_weight:
+                    G.add_edge(s1, s2, weight=sim, distance=1.0 - sim + 0.1)
+
+    # Use spring layout with distance-based positioning
+    if G.edges():
+        pos = nx.spring_layout(
+            G,
+            k=1.5,
+            iterations=200,
+            seed=42,
+            weight='distance'
+        )
+    else:
+        pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+
+    fig, ax = plt.subplots(figsize=(16, 14))
+
+    # Node colors based on treatment
+    node_colors = [EVO_COLOR_MAP.get(G.nodes[n]['treatment'], '#888888') for n in G.nodes()]
+
+    # Draw nodes
+    nx.draw_networkx_nodes(
+        G, pos,
+        node_size=800,
+        node_color=node_colors,
+        edgecolors='black',
+        linewidths=1.5,
+        ax=ax
+    )
+
+    # Draw edges
+    edges = G.edges(data=True)
+    if edges:
+        edge_weights = [d['weight'] for _, _, d in edges]
+        max_weight = max(edge_weights) if edge_weights else 1
+
+        for (u, v, d) in edges:
+            weight = d['weight']
+            # Check if same treatment (within) or different (between)
+            t1 = G.nodes[u]['treatment']
+            t2 = G.nodes[v]['treatment']
+
+            width = 0.5 + 4 * (weight / max_weight)
+            alpha = 0.2 + 0.6 * (weight / max_weight)
+
+            if t1 == t2:
+                # Within-treatment edges: use treatment color
+                color = EVO_COLOR_MAP.get(t1, '#888888')
+            else:
+                # Between-treatment edges: gray
+                if weight > 0.5:
+                    color = '#2E7D32'
+                elif weight > 0.3:
+                    color = '#FF8F00'
+                else:
+                    color = '#BDBDBD'
+
+            nx.draw_networkx_edges(
+                G, pos,
+                edgelist=[(u, v)],
+                width=width,
+                alpha=alpha,
+                edge_color=color,
+                ax=ax
+            )
+
+    # Draw labels
+    nx.draw_networkx_labels(G, pos, font_size=8, font_weight='bold', ax=ax)
+
+    ax.set_title("Sample-Level Mutation Similarity Network\n(Gene-based, excluding synonymous)",
+                 fontsize=16, fontweight='bold', pad=20)
+
+    # Legend for treatments
+    from matplotlib.patches import Patch
+    treatments = sorted(set(extract_treatment_from_sample(s) for s in samples))
+    legend_patches = [Patch(facecolor=EVO_COLOR_MAP.get(t, '#888888'),
+                            edgecolor='black', label=t) for t in treatments]
+    ax.legend(handles=legend_patches, loc='upper left', fontsize=10, title='Treatment')
+
+    ax.text(0.02, 0.02,
+            f'Showing edges with similarity >= {min_edge_weight}\n'
+            'Colored edges = within-treatment\n'
+            'Gray edges = between-treatment\n'
+            'Distance = inverse of similarity (closer = more similar)',
+            transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  Saved sample network to {output_path}")
+
+
 def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, min_edge_weight: float = 0.1):
     """
-    Create a network visualization of treatment similarities.
+    Create a network visualization of treatment similarities (aggregated).
 
     - Higher similarity = nodes closer together
     - Edge thickness = similarity strength
@@ -343,19 +533,16 @@ def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, mi
             if i < j:
                 sim = treatment_sim.loc[t1, t2]
                 if sim >= min_edge_weight:
-                    # Store both similarity and distance (for layout)
-                    # Distance = 1 - similarity (high similarity = small distance = closer)
                     G.add_edge(t1, t2, weight=sim, distance=1.0 - sim + 0.1)
 
     # Use spring layout with distance-based positioning
-    # Higher similarity = smaller distance = nodes closer together
     if G.edges():
         pos = nx.spring_layout(
             G,
-            k=2,  # Optimal distance between nodes
+            k=2,
             iterations=100,
             seed=42,
-            weight='distance'  # Use distance for layout (inverse of similarity)
+            weight='distance'
         )
     else:
         pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
@@ -389,13 +576,12 @@ def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, mi
             width = 1 + 10 * (weight / max_weight)
             alpha = 0.3 + 0.6 * (weight / max_weight)
 
-            # Color based on similarity strength
             if weight > 0.5:
-                color = '#2E7D32'  # Dark green
+                color = '#2E7D32'
             elif weight > 0.3:
-                color = '#FF8F00'  # Orange
+                color = '#FF8F00'
             else:
-                color = '#BDBDBD'  # Light gray
+                color = '#BDBDBD'
 
             nx.draw_networkx_edges(
                 G, pos,
@@ -406,12 +592,12 @@ def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, mi
                 ax=ax
             )
 
-    # Draw labels (no edge labels - cleaner)
+    # Draw labels
     nx.draw_networkx_labels(G, pos, font_size=14, font_weight='bold', ax=ax)
 
-    ax.set_title("AMP Mutation Similarity Network", fontsize=16, fontweight='bold', pad=20)
+    ax.set_title("Treatment-Level Mutation Similarity Network\n(Aggregated across replicates)",
+                 fontsize=16, fontweight='bold', pad=20)
 
-    # Legend for edge colors
     legend_elements = [
         plt.Line2D([0], [0], color='#2E7D32', linewidth=5, label='High similarity (>0.5)'),
         plt.Line2D([0], [0], color='#FF8F00', linewidth=3, label='Medium similarity (0.3-0.5)'),
@@ -430,18 +616,21 @@ def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, mi
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
-    print(f"  Saved similarity network to {output_path}")
+    print(f"  Saved treatment network to {output_path}")
 
 
 def main():
     if len(sys.argv) < 3:
         print("Usage: python run_similarity_analysis.py <input_file> <output_dir>")
         print()
-        print("Input file: Long format CSV with 'sample', 'position', 'reference', 'alternative' columns")
+        print("Input file: Long format CSV with 'sample', 'gene_name'/'locus_tag', 'effect' columns")
+        print()
+        print("Similarity is calculated based on mutations in the SAME GENE")
+        print("(excluding synonymous mutations)")
         print()
         print("Example:")
         print("  python scripts/run_similarity_analysis.py \\")
-        print("      results/summary_freebayes/all_mutations_freebayes.csv \\")
+        print("      results/summary_freebayes/all_mutations_freebayes_filtered.csv \\")
         print("      similarity_results")
         sys.exit(1)
 
@@ -454,27 +643,36 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("="*60)
+    print("="*70)
     print("MUTATION PROFILE SIMILARITY ANALYSIS")
-    print("="*60)
+    print("="*70)
     print(f"Input: {input_file}")
     print(f"Output: {output_dir}")
     print()
+    print("Similarity method: Gene-based (mutations in same gene = match)")
+    print("                   Excluding synonymous mutations")
+    print()
 
-    # Load data
+    # Load data - get gene-based mutation sets
     print("Loading mutations...")
-    sample_mutations = load_long_format(input_file)
-    print(f"  Found {len(sample_mutations)} samples")
-    for sample, muts in list(sample_mutations.items())[:3]:
-        print(f"    {sample}: {len(muts)} mutations")
+    sample_genes, sample_positions = load_long_format(input_file, use_genes=True)
 
-    # Calculate pairwise similarities
-    print("\nCalculating pairwise Dice similarities...")
-    sim_matrix = calculate_pairwise_similarity(sample_mutations)
+    print(f"\n  Found {len(sample_genes)} samples")
+    print("\n  Sample mutation counts (non-synonymous genes):")
+    for sample, genes in sorted(sample_genes.items())[:6]:
+        print(f"    {sample}: {len(genes)} genes mutated")
+    if len(sample_genes) > 6:
+        print(f"    ... and {len(sample_genes) - 6} more samples")
+
+    # Calculate pairwise similarities using GENES
+    print("\n" + "="*70)
+    print("CALCULATING GENE-BASED DICE SIMILARITIES")
+    print("="*70)
+    sim_matrix = calculate_pairwise_similarity(sample_genes)
 
     sim_matrix_path = output_dir / 'sample_similarity_matrix.csv'
     sim_matrix.to_csv(sim_matrix_path)
-    print(f"  Saved similarity matrix to {sim_matrix_path}")
+    print(f"  Saved sample similarity matrix to {sim_matrix_path}")
 
     # Calculate treatment-level similarities
     print("\nCalculating treatment-level similarities...")
@@ -489,49 +687,65 @@ def main():
     print(f"  Saved treatment statistics to {treatment_stats_path}")
 
     # Create visualizations
-    print("\nCreating visualizations...")
+    print("\n" + "="*70)
+    print("CREATING VISUALIZATIONS")
+    print("="*70)
 
+    # 1. Sample-level clustermap
+    print("\n1. Sample-level clustered heatmap...")
     clustermap_path = output_dir / 'sample_similarity_clustermap.png'
     create_similarity_clustermap(sim_matrix, clustermap_path)
 
+    # 2. Treatment-level heatmap
+    print("\n2. Treatment-level heatmap...")
     treatment_heatmap_path = output_dir / 'treatment_similarity_heatmap.png'
     create_treatment_heatmap(treatment_sim, treatment_heatmap_path)
 
-    network_path = output_dir / 'treatment_similarity_network.png'
-    create_similarity_network(treatment_sim, network_path)
+    # 3. Sample-level network (replicate level)
+    print("\n3. Sample-level (replicate) network...")
+    sample_network_path = output_dir / 'sample_similarity_network.png'
+    create_sample_network(sim_matrix, sample_network_path, min_edge_weight=0.3)
+
+    # 4. Treatment-level network (aggregated)
+    print("\n4. Treatment-level (aggregated) network...")
+    treatment_network_path = output_dir / 'treatment_similarity_network.png'
+    create_similarity_network(treatment_sim, treatment_network_path, min_edge_weight=0.1)
 
     # Print summary
     print()
-    print("="*60)
+    print("="*70)
     print("SIMILARITY ANALYSIS SUMMARY")
-    print("="*60)
+    print("="*70)
 
     within_stats = treatment_stats[treatment_stats['type'] == 'within']
     print("\nWithin-treatment similarity (replicate consistency):")
-    for _, row in within_stats.iterrows():
-        print(f"  {row['treatment1']}: {row['mean_similarity']:.3f} ± {row['std_similarity']:.3f}")
+    print("  (How consistently do replicates of the same AMP mutate the same genes?)")
+    for _, row in within_stats.sort_values('mean_similarity', ascending=False).iterrows():
+        n_comp = int(row['n_comparisons'])
+        print(f"  {row['treatment1']:8s}: {row['mean_similarity']:.3f} ± {row['std_similarity']:.3f} (n={n_comp} pairs)")
 
     between_stats = treatment_stats[treatment_stats['type'] == 'between'].copy()
     between_stats = between_stats.sort_values('mean_similarity', ascending=False)
 
-    print("\nMost similar treatment pairs:")
+    print("\nMost similar treatment pairs (target similar genes/pathways):")
     for _, row in between_stats.head(5).iterrows():
-        print(f"  {row['treatment1']} - {row['treatment2']}: {row['mean_similarity']:.3f}")
+        print(f"  {row['treatment1']:8s} - {row['treatment2']:8s}: {row['mean_similarity']:.3f}")
 
-    print("\nLeast similar treatment pairs:")
+    print("\nLeast similar treatment pairs (target different genes/pathways):")
     for _, row in between_stats.tail(3).iterrows():
-        print(f"  {row['treatment1']} - {row['treatment2']}: {row['mean_similarity']:.3f}")
+        print(f"  {row['treatment1']:8s} - {row['treatment2']:8s}: {row['mean_similarity']:.3f}")
 
     print()
-    print("="*60)
+    print("="*70)
     print("OUTPUT FILES")
-    print("="*60)
-    print(f"  {output_dir}/sample_similarity_matrix.csv")
-    print(f"  {output_dir}/treatment_similarity_matrix.csv")
-    print(f"  {output_dir}/treatment_similarity_stats.csv")
-    print(f"  {output_dir}/sample_similarity_clustermap.png")
-    print(f"  {output_dir}/treatment_similarity_heatmap.png")
-    print(f"  {output_dir}/treatment_similarity_network.png")
+    print("="*70)
+    print(f"  {output_dir}/sample_similarity_matrix.csv      - Pairwise sample similarities")
+    print(f"  {output_dir}/treatment_similarity_matrix.csv   - Treatment-level similarities")
+    print(f"  {output_dir}/treatment_similarity_stats.csv    - Within/between statistics")
+    print(f"  {output_dir}/sample_similarity_clustermap.png  - Clustered heatmap (samples)")
+    print(f"  {output_dir}/treatment_similarity_heatmap.png  - Treatment heatmap")
+    print(f"  {output_dir}/sample_similarity_network.png     - Replicate-level network")
+    print(f"  {output_dir}/treatment_similarity_network.png  - Treatment-level network")
 
 
 if __name__ == '__main__':
