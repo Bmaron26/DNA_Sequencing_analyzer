@@ -25,6 +25,17 @@ from collections import defaultdict
 
 import pandas as pd
 import numpy as np
+import re
+
+# Standard color map for AMP treatments
+EVO_COLOR_MAP = {
+    'Mel': '#729ECEFF',
+    'Pex': '#FF9E4AFF',
+    'BmKn': '#67BF5CFF',
+    'Puro': '#ED665DFF',
+    'Pleu': '#AD8BC9FF',
+    'Smp': '#A8786EFF'
+}
 
 
 def dice_similarity(set1: set, set2: set) -> float:
@@ -113,18 +124,47 @@ def calculate_pairwise_similarity(sample_mutations: Dict[str, set]) -> pd.DataFr
 
 
 def extract_treatment_from_sample(sample_name: str) -> str:
-    """Extract treatment name from sample name (e.g., 'BmKn1_1' -> 'BmKn1')."""
-    parts = sample_name.rsplit('_', 1)
-    if len(parts) == 2 and parts[1].isdigit():
-        return parts[0]
+    """
+    Extract treatment name from sample name.
+
+    Examples:
+        'BmKn1' -> 'BmKn'
+        'BmKn2' -> 'BmKn'
+        'Mel1' -> 'Mel'
+        'Puro6' -> 'Puro'
+        'BmKn1_1' -> 'BmKn'
+    """
+    # First handle underscore format (e.g., 'BmKn1_1' -> 'BmKn1')
+    if '_' in sample_name:
+        sample_name = sample_name.rsplit('_', 1)[0]
+
+    # Now extract treatment by removing trailing digits
+    # 'BmKn1' -> 'BmKn', 'Mel2' -> 'Mel'
+    match = re.match(r'^([A-Za-z]+)', sample_name)
+    if match:
+        return match.group(1)
     return sample_name
 
 
 def calculate_treatment_similarity(similarity_matrix: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Calculate average similarity within and between treatment groups."""
+    """
+    Calculate average similarity within and between treatment groups.
+
+    Within-treatment: similarity between replicates of the same treatment
+                     (e.g., BmKn1 vs BmKn2, both are BmKn treatment)
+    Between-treatment: similarity between samples of different treatments
+                      (e.g., BmKn1 vs Mel1)
+
+    Note: Self-comparisons (sample vs itself) are excluded.
+    """
     samples = similarity_matrix.index.tolist()
     sample_to_treatment = {s: extract_treatment_from_sample(s) for s in samples}
     treatments = sorted(set(sample_to_treatment.values()))
+
+    print(f"  Detected treatments: {treatments}")
+    for t in treatments:
+        samples_in_t = [s for s in samples if sample_to_treatment[s] == t]
+        print(f"    {t}: {len(samples_in_t)} samples ({', '.join(samples_in_t[:3])}...)")
 
     treatment_samples = {t: [s for s in samples if sample_to_treatment[s] == t] for t in treatments}
 
@@ -138,16 +178,25 @@ def calculate_treatment_similarity(similarity_matrix: pd.DataFrame) -> Tuple[pd.
             samples2 = treatment_samples[t2]
 
             similarities = []
-            for s1 in samples1:
-                for s2 in samples2:
-                    if s1 != s2:
+
+            if t1 == t2:
+                # Within-treatment: compare different replicates of same treatment
+                # e.g., BmKn1 vs BmKn2, BmKn1 vs BmKn3, etc.
+                for idx1, s1 in enumerate(samples1):
+                    for idx2, s2 in enumerate(samples1):
+                        if idx1 < idx2:  # Avoid self-comparison and duplicates
+                            similarities.append(similarity_matrix.loc[s1, s2])
+            else:
+                # Between-treatment: compare all samples across treatments
+                for s1 in samples1:
+                    for s2 in samples2:
                         similarities.append(similarity_matrix.loc[s1, s2])
 
             if similarities:
                 mean_sim = np.mean(similarities)
                 std_sim = np.std(similarities)
             else:
-                mean_sim = 1.0 if t1 == t2 else 0.0
+                mean_sim = 0.0
                 std_sim = 0.0
 
             treatment_sim[i, j] = mean_sim
@@ -177,9 +226,8 @@ def create_similarity_clustermap(similarity_matrix: pd.DataFrame, output_path: P
     treatments = [extract_treatment_from_sample(s) for s in samples]
     unique_treatments = sorted(set(treatments))
 
-    colors = plt.cm.Set2(np.linspace(0, 1, len(unique_treatments)))
-    treatment_colors = {t: colors[i] for i, t in enumerate(unique_treatments)}
-    row_colors = [treatment_colors[extract_treatment_from_sample(s)] for s in samples]
+    # Use the standard EVO color map
+    row_colors = [EVO_COLOR_MAP.get(extract_treatment_from_sample(s), '#888888') for s in samples]
 
     g = sns.clustermap(
         similarity_matrix,
@@ -199,7 +247,8 @@ def create_similarity_clustermap(similarity_matrix: pd.DataFrame, output_path: P
 
     g.fig.suptitle("Mutation Profile Similarity (Dice Coefficient)", fontsize=14, fontweight='bold', y=1.02)
 
-    legend_handles = [plt.Rectangle((0, 0), 1, 1, facecolor=treatment_colors[t],
+    # Create legend with EVO colors
+    legend_handles = [plt.Rectangle((0, 0), 1, 1, facecolor=EVO_COLOR_MAP.get(t, '#888888'),
                                      edgecolor='black', linewidth=0.5)
                       for t in unique_treatments]
     g.ax_heatmap.legend(legend_handles, unique_treatments,
@@ -215,11 +264,14 @@ def create_similarity_clustermap(similarity_matrix: pd.DataFrame, output_path: P
 
 
 def create_treatment_heatmap(treatment_sim: pd.DataFrame, output_path: Path):
-    """Create a heatmap of treatment-level similarities."""
+    """Create a heatmap of treatment-level similarities with EVO colors."""
     import matplotlib.pyplot as plt
     import seaborn as sns
+    from matplotlib.patches import Patch
 
     fig, ax = plt.subplots(figsize=(10, 8))
+
+    treatments = treatment_sim.index.tolist()
 
     sns.heatmap(
         treatment_sim,
@@ -228,18 +280,36 @@ def create_treatment_heatmap(treatment_sim: pd.DataFrame, output_path: Path):
         cmap='RdYlBu_r',
         vmin=0, vmax=1,
         square=True,
-        linewidths=1,
+        linewidths=2,
         cbar_kws={'label': 'Dice Similarity', 'shrink': 0.8},
         ax=ax,
-        annot_kws={'fontsize': 11, 'fontweight': 'bold'}
+        annot_kws={'fontsize': 12, 'fontweight': 'bold'}
     )
 
-    ax.set_title("Treatment-Level Mutation Similarity", fontsize=14, fontweight='bold', pad=15)
+    ax.set_title("Treatment-Level Mutation Similarity\n(Mean Dice coefficient across replicates)",
+                 fontsize=14, fontweight='bold', pad=15)
     ax.set_xlabel('Treatment', fontsize=12)
     ax.set_ylabel('Treatment', fontsize=12)
 
-    plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=11)
-    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=11)
+    # Color the tick labels using EVO colors
+    for i, label in enumerate(ax.get_xticklabels()):
+        treatment = treatments[i]
+        label.set_color(EVO_COLOR_MAP.get(treatment, 'black'))
+        label.set_fontweight('bold')
+
+    for i, label in enumerate(ax.get_yticklabels()):
+        treatment = treatments[i]
+        label.set_color(EVO_COLOR_MAP.get(treatment, 'black'))
+        label.set_fontweight('bold')
+
+    plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=12)
+    plt.setp(ax.get_yticklabels(), rotation=0, fontsize=12)
+
+    # Add color legend
+    legend_patches = [Patch(facecolor=EVO_COLOR_MAP.get(t, '#888888'), edgecolor='black', label=t)
+                      for t in treatments]
+    ax.legend(handles=legend_patches, loc='upper left', bbox_to_anchor=(1.25, 1.0),
+              title='Treatment', fontsize=10)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
@@ -248,41 +318,67 @@ def create_treatment_heatmap(treatment_sim: pd.DataFrame, output_path: Path):
 
 
 def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, min_edge_weight: float = 0.1):
-    """Create a network visualization of treatment similarities."""
+    """
+    Create a network visualization of treatment similarities.
+
+    - Higher similarity = nodes closer together
+    - Edge thickness = similarity strength
+    - Node color = treatment (using EVO_COLOR_MAP)
+    - No edge labels (cleaner visualization)
+    """
     import matplotlib.pyplot as plt
     import networkx as nx
 
     treatments = treatment_sim.index.tolist()
     G = nx.Graph()
 
+    # Add nodes
     for t in treatments:
         within_sim = treatment_sim.loc[t, t]
         G.add_node(t, within_similarity=within_sim)
 
+    # Add edges with similarity as weight
     for i, t1 in enumerate(treatments):
         for j, t2 in enumerate(treatments):
             if i < j:
                 sim = treatment_sim.loc[t1, t2]
                 if sim >= min_edge_weight:
-                    G.add_edge(t1, t2, weight=sim)
+                    # Store both similarity and distance (for layout)
+                    # Distance = 1 - similarity (high similarity = small distance = closer)
+                    G.add_edge(t1, t2, weight=sim, distance=1.0 - sim + 0.1)
 
-    pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
+    # Use spring layout with distance-based positioning
+    # Higher similarity = smaller distance = nodes closer together
+    if G.edges():
+        pos = nx.spring_layout(
+            G,
+            k=2,  # Optimal distance between nodes
+            iterations=100,
+            seed=42,
+            weight='distance'  # Use distance for layout (inverse of similarity)
+        )
+    else:
+        pos = nx.spring_layout(G, k=2, iterations=50, seed=42)
 
     fig, ax = plt.subplots(figsize=(12, 10))
 
-    node_sizes = [1500 + 1000 * G.nodes[n].get('within_similarity', 0.5) for n in G.nodes()]
-    colors = plt.cm.Set2(np.linspace(0, 1, len(treatments)))
-    node_colors = {t: colors[i] for i, t in enumerate(treatments)}
+    # Node sizes based on within-treatment similarity
+    node_sizes = [2000 + 1500 * G.nodes[n].get('within_similarity', 0.5) for n in G.nodes()]
 
+    # Use EVO color map
+    node_colors = [EVO_COLOR_MAP.get(n, '#888888') for n in G.nodes()]
+
+    # Draw nodes
     nx.draw_networkx_nodes(
         G, pos,
         node_size=node_sizes,
-        node_color=[node_colors[n] for n in G.nodes()],
+        node_color=node_colors,
         edgecolors='black',
         linewidths=2,
         ax=ax
     )
 
+    # Draw edges with varying thickness based on similarity
     edges = G.edges(data=True)
     if edges:
         edge_weights = [d['weight'] for _, _, d in edges]
@@ -290,34 +386,44 @@ def create_similarity_network(treatment_sim: pd.DataFrame, output_path: Path, mi
 
         for (u, v, d) in edges:
             weight = d['weight']
-            width = 1 + 8 * (weight / max_weight)
-            alpha = 0.3 + 0.7 * (weight / max_weight)
+            width = 1 + 10 * (weight / max_weight)
+            alpha = 0.3 + 0.6 * (weight / max_weight)
 
+            # Color based on similarity strength
             if weight > 0.5:
-                color = 'darkgreen'
+                color = '#2E7D32'  # Dark green
             elif weight > 0.3:
-                color = 'orange'
+                color = '#FF8F00'  # Orange
             else:
-                color = 'lightgray'
+                color = '#BDBDBD'  # Light gray
 
-            nx.draw_networkx_edges(G, pos, edgelist=[(u, v)], width=width, alpha=alpha, edge_color=color, ax=ax)
+            nx.draw_networkx_edges(
+                G, pos,
+                edgelist=[(u, v)],
+                width=width,
+                alpha=alpha,
+                edge_color=color,
+                ax=ax
+            )
 
-        edge_labels = {(u, v): f"{d['weight']:.2f}" for u, v, d in edges if d['weight'] > 0.15}
-        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=9, font_weight='bold', ax=ax)
+    # Draw labels (no edge labels - cleaner)
+    nx.draw_networkx_labels(G, pos, font_size=14, font_weight='bold', ax=ax)
 
-    nx.draw_networkx_labels(G, pos, font_size=12, font_weight='bold', ax=ax)
+    ax.set_title("AMP Mutation Similarity Network", fontsize=16, fontweight='bold', pad=20)
 
-    ax.set_title("AMP Mutation Similarity Network", fontsize=14, fontweight='bold', pad=15)
-
+    # Legend for edge colors
     legend_elements = [
-        plt.Line2D([0], [0], color='darkgreen', linewidth=4, label='High similarity (>0.5)'),
-        plt.Line2D([0], [0], color='orange', linewidth=3, label='Medium similarity (0.3-0.5)'),
-        plt.Line2D([0], [0], color='lightgray', linewidth=2, label='Low similarity (<0.3)')
+        plt.Line2D([0], [0], color='#2E7D32', linewidth=5, label='High similarity (>0.5)'),
+        plt.Line2D([0], [0], color='#FF8F00', linewidth=3, label='Medium similarity (0.3-0.5)'),
+        plt.Line2D([0], [0], color='#BDBDBD', linewidth=2, label='Low similarity (<0.3)')
     ]
-    ax.legend(handles=legend_elements, loc='upper left', fontsize=10)
+    ax.legend(handles=legend_elements, loc='upper left', fontsize=11)
 
-    ax.text(0.02, 0.02, 'Node size = within-treatment similarity\nEdge thickness = between-treatment similarity',
-            transform=ax.transAxes, fontsize=9, verticalalignment='bottom',
+    ax.text(0.02, 0.02,
+            'Node size = within-treatment replicate consistency\n'
+            'Edge thickness = between-treatment similarity\n'
+            'Distance = inverse of similarity (closer = more similar)',
+            transform=ax.transAxes, fontsize=10, verticalalignment='bottom',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     ax.axis('off')
