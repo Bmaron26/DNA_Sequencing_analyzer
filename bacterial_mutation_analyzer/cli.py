@@ -1739,6 +1739,57 @@ def filter_ancestral(results_dir: str, output_dir: Optional[str],
     console.print(f"  Or use the filtered CSV files directly for analysis")
 
 
+@main.command()
+@click.argument('input_file', type=click.Path(exists=True))
+@click.option('-o', '--output-dir', default='similarity_analysis',
+              help='Output directory (default: similarity_analysis)')
+@click.option('--format', 'file_format', default='auto',
+              type=click.Choice(['auto', 'matrix', 'long']),
+              help='Input file format (default: auto-detect)')
+@click.option('--min-edge', default=0.1, type=float,
+              help='Minimum similarity for network edges (default: 0.1)')
+def similarity(input_file: str, output_dir: str, file_format: str, min_edge: float):
+    """
+    Analyze mutation profile similarity between samples and treatments.
+
+    Calculates Dice similarity coefficient between mutation profiles,
+    creates clustered heatmaps, and generates a similarity network
+    showing which AMPs induce similar mutations.
+
+    Input can be:
+    - Matrix format (mutation_matrix.csv): samples as columns, variants as rows
+    - Long format (all_mutations.csv): one row per mutation with sample column
+
+    \b
+    Example:
+    bma similarity results/combined_analysis/freebayes/all_mutations_freebayes.csv -o similarity_results
+    """
+    from .analysis.similarity_analysis import run_similarity_analysis
+
+    console.print(Panel.fit(
+        "[bold blue]Mutation Profile Similarity Analysis[/bold blue]\n"
+        "[dim]Which AMPs induce similar mutations?[/dim]",
+        border_style="blue"
+    ))
+
+    results = run_similarity_analysis(
+        Path(input_file),
+        Path(output_dir),
+        file_format=file_format,
+        min_edge_weight=min_edge
+    )
+
+    console.print(f"\n[green]✓[/green] Analysis complete!")
+    console.print(f"[dim]Results saved to: {output_dir}[/dim]")
+
+    console.print("\n[bold]Output files:[/bold]")
+    console.print("  - sample_similarity_matrix.csv: Pairwise Dice similarities")
+    console.print("  - treatment_similarity_matrix.csv: Treatment-level similarities")
+    console.print("  - sample_similarity_clustermap.png: Clustered heatmap")
+    console.print("  - treatment_similarity_heatmap.png: Treatment heatmap")
+    console.print("  - treatment_similarity_network.png: Network visualization")
+
+
 def _print_input_summary(fastq_files: List[str], reference: str,
                         annotation: Optional[str], sample_name: str):
     """Print input file summary."""
