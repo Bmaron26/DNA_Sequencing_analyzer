@@ -438,8 +438,10 @@ def create_similarity_network(
     from matplotlib.lines import Line2D
 
     legend_elements = [
-        Patch(facecolor='gray', edgecolor='black', label='Single AMP (circle)'),
-        Patch(facecolor='gray', edgecolor='black', label='Combination (square)', marker='s'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray',
+               markeredgecolor='black', markersize=12, label='Single AMP (circle)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
+               markeredgecolor='black', markersize=12, label='Combination (square)'),
         Line2D([0], [0], color='#2E7D32', linewidth=4, label='High similarity (>0.5)'),
         Line2D([0], [0], color='#FF8F00', linewidth=3, label='Medium (0.3-0.5)'),
         Line2D([0], [0], color='#BDBDBD', linewidth=2, label='Low (<0.3)')
