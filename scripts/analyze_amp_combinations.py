@@ -78,6 +78,20 @@ ANALYSES:
    - Method: UPGMA clustering on distance matrix (1 - Dice similarity)
    - Output: Dendrogram with treatments colored by type
 
+10. MUTATION COUNT ANALYSIS
+   - Purpose: Compare mutation burden across treatments
+   - Statistical tests:
+     * Kruskal-Wallis H-test: Differences between multiple treatments
+     * Mann-Whitney U: Singles vs combinations comparison
+     * Independent t-test: Parametric comparison
+     * Cohen's d: Effect size measurement
+   - Outputs:
+     * Boxplot with dots for single AMPs only
+     * Boxplot with dots for all treatments
+     * Violin plot comparing singles vs combinations
+     * Pairwise comparison heatmap (p-values)
+     * Statistical summary CSV
+
 ================================================================================
 
 Usage:
@@ -1494,6 +1508,400 @@ def create_phylogenetic_tree(
         pass  # Skip circular plot if it fails
 
 
+def analyze_mutation_counts(
+    sample_genes: Dict[str, Set[str]],
+    output_dir: Path
+) -> pd.DataFrame:
+    """
+    Analyze mutation counts per sample with statistical testing.
+    Creates:
+    1. Boxplot with dots for single AMPs only
+    2. Boxplot with dots for all treatments
+    3. Violin plot comparing singles vs combinations
+    4. Statistical analysis (Kruskal-Wallis, Mann-Whitney U)
+    """
+    import matplotlib.pyplot as plt
+    from scipy import stats
+
+    # Build data structure
+    data = []
+    for sample, genes in sample_genes.items():
+        treatment = extract_treatment_from_sample(sample)
+        is_combination = '_' in treatment and not treatment.startswith('NPSA')
+        data.append({
+            'sample': sample,
+            'treatment': treatment,
+            'n_mutations': len(genes),
+            'type': 'Combination' if is_combination else 'Single'
+        })
+
+    df = pd.DataFrame(data)
+    df.to_csv(output_dir / 'mutation_counts.csv', index=False)
+
+    # Separate singles and combinations
+    df_singles = df[df['type'] == 'Single']
+    df_combos = df[df['type'] == 'Combination']
+
+    stats_results = []
+
+    # =========================================================================
+    # FIGURE 1: Single AMPs only - Boxplot with dots
+    # =========================================================================
+    if not df_singles.empty:
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        single_treatments = sorted(df_singles['treatment'].unique())
+        positions = range(len(single_treatments))
+
+        # Get data for each treatment
+        treatment_data = [df_singles[df_singles['treatment'] == t]['n_mutations'].values
+                         for t in single_treatments]
+
+        # Create boxplot
+        bp = ax.boxplot(treatment_data, positions=positions, widths=0.6,
+                       patch_artist=True, showfliers=False)
+
+        # Color boxes
+        for i, (patch, treatment) in enumerate(zip(bp['boxes'], single_treatments)):
+            color = EVO_COLOR_MAP.get(treatment, '#888888')
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+            patch.set_edgecolor('black')
+            patch.set_linewidth(1.5)
+
+        # Add jittered points
+        for i, (treatment, values) in enumerate(zip(single_treatments, treatment_data)):
+            jitter = np.random.normal(0, 0.1, len(values))
+            color = EVO_COLOR_MAP.get(treatment, '#888888')
+            ax.scatter(np.full(len(values), i) + jitter, values,
+                      c=[color], edgecolors='black', s=50, alpha=0.8, zorder=3)
+
+        # Statistical test: Kruskal-Wallis (non-parametric ANOVA)
+        if len(single_treatments) > 1 and all(len(d) > 0 for d in treatment_data):
+            try:
+                h_stat, p_value = stats.kruskal(*treatment_data)
+                stats_results.append({
+                    'comparison': 'Single AMPs (Kruskal-Wallis)',
+                    'test': 'Kruskal-Wallis H-test',
+                    'statistic': h_stat,
+                    'p_value': p_value,
+                    'significant': p_value < 0.05,
+                    'interpretation': 'Significant differences between treatments' if p_value < 0.05
+                                     else 'No significant differences'
+                })
+
+                # Add p-value to plot
+                sig_text = f'Kruskal-Wallis p = {p_value:.4f}'
+                if p_value < 0.001:
+                    sig_text = f'Kruskal-Wallis p < 0.001 ***'
+                elif p_value < 0.01:
+                    sig_text = f'Kruskal-Wallis p = {p_value:.4f} **'
+                elif p_value < 0.05:
+                    sig_text = f'Kruskal-Wallis p = {p_value:.4f} *'
+
+                ax.text(0.02, 0.98, sig_text, transform=ax.transAxes,
+                       fontsize=11, verticalalignment='top',
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+            except Exception:
+                pass
+
+        ax.set_xticks(positions)
+        ax.set_xticklabels(single_treatments, fontsize=11, fontweight='bold')
+        ax.set_ylabel('Number of Mutated Genes', fontsize=12)
+        ax.set_xlabel('Single AMP Treatment', fontsize=12)
+        ax.set_title('Mutation Counts: Single AMP Treatments\n(Filtered: coding, non-synonymous, non-ancestral)',
+                    fontsize=14, fontweight='bold')
+
+        # Add mean values as text
+        for i, (treatment, values) in enumerate(zip(single_treatments, treatment_data)):
+            mean_val = np.mean(values)
+            ax.text(i, ax.get_ylim()[1] * 0.02, f'μ={mean_val:.1f}',
+                   ha='center', fontsize=9, fontweight='bold')
+
+        plt.tight_layout()
+        plt.savefig(output_dir / 'mutation_counts_singles_boxplot.png', dpi=150,
+                   bbox_inches='tight', facecolor='white')
+        plt.close()
+
+    # =========================================================================
+    # FIGURE 2: All treatments - Boxplot with dots
+    # =========================================================================
+    fig, ax = plt.subplots(figsize=(16, 8))
+
+    all_treatments = sorted(df['treatment'].unique(),
+                           key=lambda x: (1 if '_' in x and not x.startswith('NPSA') else 0, x))
+    positions = range(len(all_treatments))
+
+    treatment_data = [df[df['treatment'] == t]['n_mutations'].values
+                     for t in all_treatments]
+
+    # Create boxplot
+    bp = ax.boxplot(treatment_data, positions=positions, widths=0.6,
+                   patch_artist=True, showfliers=False)
+
+    # Color boxes
+    for i, (patch, treatment) in enumerate(zip(bp['boxes'], all_treatments)):
+        if treatment in EVO_COLOR_MAP:
+            color = EVO_COLOR_MAP[treatment]
+        elif treatment in COMBO_COLOR_MAP:
+            color = COMBO_COLOR_MAP[treatment]
+        else:
+            color = '#888888'
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+        patch.set_edgecolor('black')
+        patch.set_linewidth(1.5)
+
+    # Add jittered points
+    for i, (treatment, values) in enumerate(zip(all_treatments, treatment_data)):
+        jitter = np.random.normal(0, 0.1, len(values))
+        if treatment in EVO_COLOR_MAP:
+            color = EVO_COLOR_MAP[treatment]
+        elif treatment in COMBO_COLOR_MAP:
+            color = COMBO_COLOR_MAP[treatment]
+        else:
+            color = '#888888'
+        ax.scatter(np.full(len(values), i) + jitter, values,
+                  c=[color], edgecolors='black', s=40, alpha=0.8, zorder=3)
+
+    # Statistical test for all treatments
+    if len(all_treatments) > 1:
+        try:
+            h_stat, p_value = stats.kruskal(*treatment_data)
+            stats_results.append({
+                'comparison': 'All Treatments (Kruskal-Wallis)',
+                'test': 'Kruskal-Wallis H-test',
+                'statistic': h_stat,
+                'p_value': p_value,
+                'significant': p_value < 0.05,
+                'interpretation': 'Significant differences between treatments' if p_value < 0.05
+                                 else 'No significant differences'
+            })
+
+            sig_text = f'Kruskal-Wallis p = {p_value:.4f}'
+            if p_value < 0.001:
+                sig_text = f'Kruskal-Wallis p < 0.001 ***'
+            elif p_value < 0.01:
+                sig_text = f'Kruskal-Wallis p = {p_value:.4f} **'
+            elif p_value < 0.05:
+                sig_text = f'Kruskal-Wallis p = {p_value:.4f} *'
+
+            ax.text(0.02, 0.98, sig_text, transform=ax.transAxes,
+                   fontsize=11, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        except Exception:
+            pass
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(all_treatments, rotation=45, ha='right', fontsize=10, fontweight='bold')
+    ax.set_ylabel('Number of Mutated Genes', fontsize=12)
+    ax.set_xlabel('Treatment', fontsize=12)
+    ax.set_title('Mutation Counts: All Treatments\n(Filtered: coding, non-synonymous, non-ancestral)',
+                fontsize=14, fontweight='bold')
+
+    # Add vertical line separating singles from combos
+    n_singles = len([t for t in all_treatments if '_' not in t or t.startswith('NPSA')])
+    if n_singles < len(all_treatments):
+        ax.axvline(x=n_singles - 0.5, color='gray', linestyle='--', linewidth=2, alpha=0.7)
+        ax.text(n_singles/2 - 0.5, ax.get_ylim()[1] * 0.95, 'Singles',
+               ha='center', fontsize=11, fontstyle='italic')
+        ax.text((n_singles + len(all_treatments))/2 - 0.5, ax.get_ylim()[1] * 0.95, 'Combinations',
+               ha='center', fontsize=11, fontstyle='italic')
+
+    plt.tight_layout()
+    plt.savefig(output_dir / 'mutation_counts_all_boxplot.png', dpi=150,
+               bbox_inches='tight', facecolor='white')
+    plt.close()
+
+    # =========================================================================
+    # FIGURE 3: Singles vs Combinations - Violin plot
+    # =========================================================================
+    if not df_singles.empty and not df_combos.empty:
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        singles_data = df_singles['n_mutations'].values
+        combos_data = df_combos['n_mutations'].values
+
+        # Create violin plot
+        parts = ax.violinplot([singles_data, combos_data], positions=[0, 1],
+                             showmeans=True, showmedians=True, showextrema=True)
+
+        # Color violins
+        colors = ['#729ECEFF', '#FF9E4AFF']
+        for i, pc in enumerate(parts['bodies']):
+            pc.set_facecolor(colors[i])
+            pc.set_edgecolor('black')
+            pc.set_alpha(0.7)
+
+        # Style other elements
+        for partname in ['cbars', 'cmins', 'cmaxes', 'cmeans', 'cmedians']:
+            if partname in parts:
+                parts[partname].set_edgecolor('black')
+                parts[partname].set_linewidth(1.5)
+
+        # Add individual points
+        jitter_singles = np.random.normal(0, 0.05, len(singles_data))
+        jitter_combos = np.random.normal(1, 0.05, len(combos_data))
+        ax.scatter(jitter_singles, singles_data, c='#729ECEFF', edgecolors='black',
+                  s=50, alpha=0.6, zorder=3)
+        ax.scatter(jitter_combos, combos_data, c='#FF9E4AFF', edgecolors='black',
+                  s=50, alpha=0.6, zorder=3)
+
+        # Statistical tests
+        # Mann-Whitney U test (non-parametric)
+        try:
+            u_stat, p_mann = stats.mannwhitneyu(singles_data, combos_data, alternative='two-sided')
+            stats_results.append({
+                'comparison': 'Singles vs Combinations',
+                'test': 'Mann-Whitney U',
+                'statistic': u_stat,
+                'p_value': p_mann,
+                'significant': p_mann < 0.05,
+                'interpretation': f'{"Significant" if p_mann < 0.05 else "No significant"} difference'
+            })
+        except Exception:
+            p_mann = 1.0
+
+        # Independent t-test (parametric)
+        try:
+            t_stat, p_ttest = stats.ttest_ind(singles_data, combos_data)
+            stats_results.append({
+                'comparison': 'Singles vs Combinations',
+                'test': "Independent t-test",
+                'statistic': t_stat,
+                'p_value': p_ttest,
+                'significant': p_ttest < 0.05,
+                'interpretation': f'{"Significant" if p_ttest < 0.05 else "No significant"} difference'
+            })
+        except Exception:
+            p_ttest = 1.0
+
+        # Calculate effect size (Cohen's d)
+        mean_diff = np.mean(combos_data) - np.mean(singles_data)
+        pooled_std = np.sqrt((np.var(singles_data) + np.var(combos_data)) / 2)
+        cohens_d = mean_diff / pooled_std if pooled_std > 0 else 0
+
+        stats_results.append({
+            'comparison': 'Singles vs Combinations',
+            'test': "Cohen's d (effect size)",
+            'statistic': cohens_d,
+            'p_value': np.nan,
+            'significant': abs(cohens_d) > 0.8,
+            'interpretation': f'{"Large" if abs(cohens_d) > 0.8 else "Medium" if abs(cohens_d) > 0.5 else "Small"} effect'
+        })
+
+        # Add statistics to plot
+        stats_text = (f'Mann-Whitney U p = {p_mann:.4f}{"*" if p_mann < 0.05 else ""}\n'
+                     f't-test p = {p_ttest:.4f}{"*" if p_ttest < 0.05 else ""}\n'
+                     f"Cohen's d = {cohens_d:.2f}")
+        ax.text(0.98, 0.98, stats_text, transform=ax.transAxes,
+               fontsize=10, verticalalignment='top', horizontalalignment='right',
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        # Add mean/median annotations
+        ax.text(0, ax.get_ylim()[1] * 0.02,
+               f'n={len(singles_data)}\nμ={np.mean(singles_data):.1f}\nmed={np.median(singles_data):.1f}',
+               ha='center', fontsize=9)
+        ax.text(1, ax.get_ylim()[1] * 0.02,
+               f'n={len(combos_data)}\nμ={np.mean(combos_data):.1f}\nmed={np.median(combos_data):.1f}',
+               ha='center', fontsize=9)
+
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(['Single AMPs', 'Combinations'], fontsize=12, fontweight='bold')
+        ax.set_ylabel('Number of Mutated Genes', fontsize=12)
+        ax.set_title('Mutation Counts: Singles vs Combinations\n(Violin plot with individual samples)',
+                    fontsize=14, fontweight='bold')
+
+        # Add interpretation
+        direction = "MORE" if np.mean(combos_data) > np.mean(singles_data) else "FEWER"
+        diff_pct = abs(np.mean(combos_data) - np.mean(singles_data)) / np.mean(singles_data) * 100
+        interp_text = f'Combinations have {direction} mutations ({diff_pct:.1f}% {"increase" if direction == "MORE" else "decrease"})'
+        ax.text(0.5, -0.12, interp_text, transform=ax.transAxes,
+               ha='center', fontsize=11, fontstyle='italic')
+
+        plt.tight_layout()
+        plt.savefig(output_dir / 'mutation_counts_singles_vs_combos_violin.png', dpi=150,
+                   bbox_inches='tight', facecolor='white')
+        plt.close()
+
+    # =========================================================================
+    # FIGURE 4: Pairwise comparisons for single AMPs
+    # =========================================================================
+    if not df_singles.empty and len(df_singles['treatment'].unique()) > 1:
+        single_treatments = sorted(df_singles['treatment'].unique())
+        n_treatments = len(single_treatments)
+
+        # Create pairwise comparison matrix
+        pairwise_results = []
+        p_matrix = np.ones((n_treatments, n_treatments))
+
+        for i, t1 in enumerate(single_treatments):
+            for j, t2 in enumerate(single_treatments):
+                if i < j:
+                    data1 = df_singles[df_singles['treatment'] == t1]['n_mutations'].values
+                    data2 = df_singles[df_singles['treatment'] == t2]['n_mutations'].values
+                    try:
+                        u_stat, p_val = stats.mannwhitneyu(data1, data2, alternative='two-sided')
+                        p_matrix[i, j] = p_val
+                        p_matrix[j, i] = p_val
+                        pairwise_results.append({
+                            'treatment1': t1,
+                            'treatment2': t2,
+                            'mean1': np.mean(data1),
+                            'mean2': np.mean(data2),
+                            'U_statistic': u_stat,
+                            'p_value': p_val,
+                            'significant': p_val < 0.05
+                        })
+                    except Exception:
+                        pass
+
+        if pairwise_results:
+            df_pairwise = pd.DataFrame(pairwise_results)
+            df_pairwise.to_csv(output_dir / 'mutation_counts_pairwise_singles.csv', index=False)
+
+            # Create heatmap of p-values
+            fig, ax = plt.subplots(figsize=(10, 8))
+
+            import matplotlib.colors as mcolors
+            # Custom colormap: green for significant, red for non-significant
+            cmap = mcolors.LinearSegmentedColormap.from_list("", ["#2E7D32", "#FFEB3B", "#D32F2F"])
+
+            im = ax.imshow(p_matrix, cmap=cmap, vmin=0, vmax=0.1)
+
+            ax.set_xticks(range(n_treatments))
+            ax.set_yticks(range(n_treatments))
+            ax.set_xticklabels(single_treatments, rotation=45, ha='right', fontsize=10)
+            ax.set_yticklabels(single_treatments, fontsize=10)
+
+            # Add p-values as text
+            for i in range(n_treatments):
+                for j in range(n_treatments):
+                    if i != j:
+                        p = p_matrix[i, j]
+                        text = f'{p:.3f}'
+                        if p < 0.001:
+                            text = '<0.001'
+                        color = 'white' if p < 0.05 else 'black'
+                        ax.text(j, i, text, ha='center', va='center', color=color, fontsize=9)
+
+            plt.colorbar(im, ax=ax, label='p-value (Mann-Whitney U)')
+            ax.set_title('Pairwise Comparisons: Single AMP Mutation Counts\n(Green = significant difference, p < 0.05)',
+                        fontsize=12, fontweight='bold')
+
+            plt.tight_layout()
+            plt.savefig(output_dir / 'mutation_counts_pairwise_heatmap.png', dpi=150,
+                       bbox_inches='tight', facecolor='white')
+            plt.close()
+
+    # Save all statistical results
+    if stats_results:
+        df_stats = pd.DataFrame(stats_results)
+        df_stats.to_csv(output_dir / 'mutation_counts_statistics.csv', index=False)
+
+    return df
+
+
 def main():
     global ANCESTRAL_POSITIONS
 
@@ -1749,6 +2157,37 @@ def main():
     create_phylogenetic_tree(all_treatment_genes, output_dir)
     print(f"   Saved: treatment_clustering_tree.png")
 
+    # ===== ANALYSIS 10: Mutation Count Analysis =====
+    print("\n" + "="*70)
+    print("ANALYSIS 10: Mutation Count Analysis")
+    print("="*70)
+
+    df_counts = analyze_mutation_counts(all_sample_genes, output_dir)
+
+    # Print summary statistics
+    df_singles_only = df_counts[df_counts['type'] == 'Single']
+    df_combos_only = df_counts[df_counts['type'] == 'Combination']
+
+    print(f"\n   Single AMP samples: n={len(df_singles_only)}")
+    if not df_singles_only.empty:
+        print(f"      Mean mutations: {df_singles_only['n_mutations'].mean():.2f}")
+        print(f"      Median: {df_singles_only['n_mutations'].median():.1f}")
+        print(f"      Range: {df_singles_only['n_mutations'].min()}-{df_singles_only['n_mutations'].max()}")
+
+    print(f"\n   Combination samples: n={len(df_combos_only)}")
+    if not df_combos_only.empty:
+        print(f"      Mean mutations: {df_combos_only['n_mutations'].mean():.2f}")
+        print(f"      Median: {df_combos_only['n_mutations'].median():.1f}")
+        print(f"      Range: {df_combos_only['n_mutations'].min()}-{df_combos_only['n_mutations'].max()}")
+
+    if not df_singles_only.empty and not df_combos_only.empty:
+        diff = df_combos_only['n_mutations'].mean() - df_singles_only['n_mutations'].mean()
+        pct = abs(diff) / df_singles_only['n_mutations'].mean() * 100
+        direction = "more" if diff > 0 else "fewer"
+        print(f"\n   Combinations have {pct:.1f}% {direction} mutations on average")
+
+    print(f"\n   Saved: mutation_counts_*.png, mutation_counts_*.csv")
+
     # ===== SUMMARY =====
     print("\n" + "="*70)
     print("SUMMARY")
@@ -1777,6 +2216,14 @@ def main():
     print("  - venn_summary.png                     : Overview of all combination overlaps")
     print("  - venn_diagrams/                       : Individual Venn diagrams per combo")
     print("  - treatment_clustering_tree.png        : Hierarchical clustering dendrogram")
+    print("\n  Mutation Count Analysis:")
+    print("  - mutation_counts.csv                  : Raw mutation counts per sample")
+    print("  - mutation_counts_singles_boxplot.png  : Boxplot for single AMPs only")
+    print("  - mutation_counts_all_boxplot.png      : Boxplot for all treatments")
+    print("  - mutation_counts_singles_vs_combos_violin.png : Violin plot comparison")
+    print("  - mutation_counts_pairwise_singles.csv : Pairwise comparisons (singles)")
+    print("  - mutation_counts_pairwise_heatmap.png : P-value heatmap for pairwise tests")
+    print("  - mutation_counts_statistics.csv       : All statistical test results")
 
 
 if __name__ == '__main__':
