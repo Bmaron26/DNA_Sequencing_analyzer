@@ -2,19 +2,92 @@
 """
 Comprehensive analysis of AMP resistance evolution mutations.
 
-Analyzes:
-1. Single AMP similarity (which AMPs target similar genes?)
-2. Combination vs Parents (novel, parent1-like, parent2-like, shared)
-3. Similarity networks (singles + combinations)
-4. Convergent evolution analysis
-5. Functional category enrichment
-6. Replicate consistency score
-7. Parent dominance index
-8. Venn diagrams for combinations
-9. Phylogenetic/clustering tree of treatments
+================================================================================
+ANALYSIS PROTOCOL
+================================================================================
+
+MUTATION FILTERING:
+-------------------
+Before analysis, mutations are filtered to include only biologically relevant
+variants:
+1. EXCLUDE synonymous mutations (no amino acid change)
+2. EXCLUDE non-coding regions (location_type != 'coding')
+   - 'genic' = within gene but not CDS (e.g., RNA genes)
+   - 'intergenic' = between genes
+   - 'upstream'/'downstream' = promoter/terminator regions
+3. EXCLUDE ancestral mutations (pre-existing in ancestor strain)
+   - Loaded from ancestral_variants.csv if provided
+   - Matched by genomic position
+
+ANALYSES:
+---------
+1. SINGLE AMP SIMILARITY
+   - Purpose: Identify which AMPs induce similar resistance mutations
+   - Method: Dice similarity coefficient = 2|A∩B| / (|A| + |B|)
+   - Compares GENES (not exact positions) mutated in each treatment
+   - Output: Heatmap showing pairwise similarity between single AMPs
+
+2. COMBINATION VS PARENTS ANALYSIS
+   - Purpose: Classify combination mutations relative to parent single AMPs
+   - Categories:
+     * Parent1-only: Gene mutated in combo AND parent1 (not parent2)
+     * Parent2-only: Gene mutated in combo AND parent2 (not parent1)
+     * Shared: Gene mutated in combo AND both parents
+     * Novel: Gene mutated in combo but NOT in either parent
+   - Output: Stacked bar chart showing % of each category per combination
+
+3. TREATMENT SIMILARITY NETWORK
+   - Purpose: Visualize relationships between all treatments
+   - Method: Network where nodes = treatments, edges = Dice similarity
+   - Edge thickness/color indicates similarity strength
+   - Layout: Spring layout (similar treatments cluster together)
+   - Output: Network graph + full similarity heatmap
+
+4. CONVERGENT EVOLUTION ANALYSIS
+   - Purpose: Identify genes mutated across multiple treatments (parallel evolution)
+   - Method: Count genes appearing in ≥3 treatments
+   - Output: List of convergent genes + heatmap of gene × treatment
+
+5. FUNCTIONAL CATEGORY ENRICHMENT
+   - Purpose: Identify biological functions targeted by AMP resistance
+   - Categories: Membrane/Cell Wall, Regulation, Metabolism, DNA/RNA,
+                 Stress Response, Virulence, Other/Unknown
+   - Method: Classify genes by name/product keywords
+   - Output: Stacked bar chart (%) + pie charts for single AMPs
+
+6. REPLICATE CONSISTENCY SCORE
+   - Purpose: Measure reproducibility of mutations across replicates
+   - Method: Mean pairwise Dice similarity within each treatment
+   - Range: 0 (completely different) to 1 (identical)
+   - Output: Bar chart with consistency scores per treatment
+
+7. PARENT DOMINANCE INDEX (PDI)
+   - Purpose: Quantify which parent's profile dominates in combinations
+   - Formula: PDI = (overlap_P1 - overlap_P2) / (overlap_P1 + overlap_P2)
+   - Range: -1 (P2 dominant) to +1 (P1 dominant), 0 = balanced
+   - Classification: |PDI| > 0.3 = dominant, else balanced
+   - Output: Bar chart with PDI values per combination
+
+8. VENN DIAGRAMS
+   - Purpose: Visualize gene overlaps between combination and parents
+   - Shows: Novel genes, genes shared with each parent, genes in all three
+   - Output: Individual Venn/bar charts + summary figure
+
+9. HIERARCHICAL CLUSTERING TREE
+   - Purpose: Show evolutionary relationships between treatments
+   - Method: UPGMA clustering on distance matrix (1 - Dice similarity)
+   - Output: Dendrogram with treatments colored by type
+
+================================================================================
 
 Usage:
-    python analyze_amp_combinations.py <singles_dir> <combinations_dir> <output_dir>
+    python analyze_amp_combinations.py <singles_dir> <combinations_dir> <output_dir> [ancestral_file]
+
+Arguments:
+    singles_dir       Directory with single AMP results
+    combinations_dir  Directory with combination results
+    output_dir        Output directory for analysis
+    ancestral_file    (Optional) CSV with ancestral mutations to exclude
 """
 
 import sys
@@ -26,6 +99,9 @@ import re
 
 import pandas as pd
 import numpy as np
+
+# Global variable for ancestral mutations (position-based)
+ANCESTRAL_POSITIONS: Set[int] = set()
 
 # Standard color map for AMP treatments
 EVO_COLOR_MAP = {
@@ -58,12 +134,86 @@ COMBO_COLOR_MAP = {
 }
 
 
+def load_ancestral_mutations(ancestral_file: Path) -> Set[int]:
+    """
+    Load ancestral mutations from CSV file.
+    Returns set of genomic positions to exclude.
+    """
+    positions = set()
+    if not ancestral_file.exists():
+        print(f"   Warning: Ancestral file not found: {ancestral_file}")
+        return positions
+
+    df = pd.read_csv(ancestral_file)
+
+    # Find position column
+    pos_col = None
+    for col in ['position', 'POS', 'pos', 'Position']:
+        if col in df.columns:
+            pos_col = col
+            break
+
+    if pos_col is None:
+        print(f"   Warning: No position column found in ancestral file")
+        return positions
+
+    for pos in df[pos_col]:
+        if not pd.isna(pos):
+            positions.add(int(pos))
+
+    print(f"   Loaded {len(positions)} ancestral positions to exclude")
+    return positions
+
+
 def is_synonymous(effect: str) -> bool:
     """Check if a mutation effect is synonymous."""
     if pd.isna(effect):
         return False
     effect_lower = str(effect).lower()
     return any(term in effect_lower for term in ['synonymous', 'silent', 'syn_coding'])
+
+
+def is_coding_region(location_type: str) -> bool:
+    """Check if mutation is in a coding region (CDS)."""
+    if pd.isna(location_type):
+        return True  # If unknown, include it
+    loc_lower = str(location_type).lower()
+    return loc_lower == 'coding'
+
+
+def is_ancestral_mutation(position) -> bool:
+    """Check if mutation position is in ancestral variants."""
+    if pd.isna(position):
+        return False
+    try:
+        return int(position) in ANCESTRAL_POSITIONS
+    except (ValueError, TypeError):
+        return False
+
+
+def should_include_mutation(row: pd.Series, effect_col: str = None,
+                            location_col: str = None, pos_col: str = None) -> bool:
+    """
+    Determine if a mutation should be included in analysis.
+    Excludes: synonymous, non-coding, and ancestral mutations.
+    """
+    # Check synonymous
+    if effect_col and is_synonymous(row.get(effect_col, '')):
+        return False
+
+    # Check location type (only include 'coding')
+    if location_col:
+        loc_type = row.get(location_col, '')
+        if not pd.isna(loc_type) and str(loc_type).strip():
+            if not is_coding_region(loc_type):
+                return False
+
+    # Check ancestral
+    if pos_col and ANCESTRAL_POSITIONS:
+        if is_ancestral_mutation(row.get(pos_col, None)):
+            return False
+
+    return True
 
 
 def extract_treatment_from_sample(sample_name: str) -> str:
@@ -147,6 +297,11 @@ def load_mutations_from_directory(results_dir: Path) -> Dict[str, Set[str]]:
     Load mutations from a results directory.
     Returns dict mapping sample_name -> set of mutated genes.
     Handles nested directories (e.g., BmKn_comb/BmKn_Smp1).
+
+    Filtering applied:
+    - Excludes synonymous mutations
+    - Excludes non-coding regions (only keeps location_type='coding')
+    - Excludes ancestral mutations (if ANCESTRAL_POSITIONS is loaded)
     """
     sample_genes = {}
 
@@ -179,10 +334,24 @@ def load_mutations_from_directory(results_dir: Path) -> Dict[str, Set[str]]:
                 effect_col = col
                 break
 
+        # Detect location_type column
+        location_col = None
+        for col in ['location_type', 'LOCATION', 'location']:
+            if col in df.columns:
+                location_col = col
+                break
+
+        # Detect position column
+        pos_col = None
+        for col in ['position', 'POS', 'pos', 'Position']:
+            if col in df.columns:
+                pos_col = col
+                break
+
         genes = set()
         for _, row in df.iterrows():
-            # Skip synonymous
-            if effect_col and is_synonymous(row.get(effect_col, '')):
+            # Apply all filters
+            if not should_include_mutation(row, effect_col, location_col, pos_col):
                 continue
 
             if gene_col:
@@ -584,6 +753,11 @@ def load_mutations_with_details(results_dir: Path) -> Dict[str, pd.DataFrame]:
     Load full mutation data from a results directory.
     Returns dict mapping sample_name -> DataFrame with all mutation details.
     Handles nested directories (e.g., BmKn_comb/BmKn_Smp1).
+
+    Filtering applied:
+    - Excludes synonymous mutations
+    - Excludes non-coding regions (only keeps location_type='coding')
+    - Excludes ancestral mutations (if ANCESTRAL_POSITIONS is loaded)
     """
     sample_mutations = {}
 
@@ -601,7 +775,34 @@ def load_mutations_with_details(results_dir: Path) -> Dict[str, pd.DataFrame]:
             continue
 
         df = pd.read_csv(mut_file)
-        sample_mutations[sample_name] = df
+
+        # Detect columns for filtering
+        effect_col = None
+        for col in ['effect', 'EFFECT']:
+            if col in df.columns:
+                effect_col = col
+                break
+
+        location_col = None
+        for col in ['location_type', 'LOCATION', 'location']:
+            if col in df.columns:
+                location_col = col
+                break
+
+        pos_col = None
+        for col in ['position', 'POS', 'pos', 'Position']:
+            if col in df.columns:
+                pos_col = col
+                break
+
+        # Filter rows
+        mask = df.apply(
+            lambda row: should_include_mutation(row, effect_col, location_col, pos_col),
+            axis=1
+        )
+        df_filtered = df[mask].copy()
+
+        sample_mutations[sample_name] = df_filtered
 
     return sample_mutations
 
@@ -1294,21 +1495,25 @@ def create_phylogenetic_tree(
 
 
 def main():
+    global ANCESTRAL_POSITIONS
+
     if len(sys.argv) < 4:
-        print("Usage: python analyze_amp_combinations.py <singles_dir> <combinations_dir> <output_dir>")
+        print("Usage: python analyze_amp_combinations.py <singles_dir> <combinations_dir> <output_dir> [ancestral_file]")
         print()
         print("Arguments:")
         print("  singles_dir:      Directory with single AMP results")
         print("  combinations_dir: Directory with combination results")
         print("  output_dir:       Output directory for analysis")
+        print("  ancestral_file:   (Optional) CSV with ancestral mutations to exclude")
         print()
         print("Example:")
-        print("  python analyze_amp_combinations.py results_single_amps results_combinations analysis_output")
+        print("  python analyze_amp_combinations.py results_single_amps results_combinations analysis_output ancestral_variants.csv")
         sys.exit(1)
 
     singles_dir = Path(sys.argv[1])
     combinations_dir = Path(sys.argv[2])
     output_dir = Path(sys.argv[3])
+    ancestral_file = Path(sys.argv[4]) if len(sys.argv) > 4 else None
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1316,15 +1521,40 @@ def main():
     print("AMP COMBINATION MUTATION ANALYSIS")
     print("="*70)
 
+    # Print filtering info
+    print("\n" + "-"*70)
+    print("MUTATION FILTERING APPLIED:")
+    print("-"*70)
+    print("  - Excluding synonymous mutations")
+    print("  - Excluding non-coding regions (keeping only location_type='coding')")
+
+    # Load ancestral mutations if provided
+    if ancestral_file:
+        print(f"\n  Loading ancestral mutations from: {ancestral_file}")
+        ANCESTRAL_POSITIONS = load_ancestral_mutations(ancestral_file)
+        print(f"  - Excluding {len(ANCESTRAL_POSITIONS)} ancestral mutation positions")
+    else:
+        print("  - No ancestral file provided (ancestral mutations NOT filtered)")
+        ANCESTRAL_POSITIONS = set()
+
+    print("-"*70)
+
     # Load single AMP data
     print("\n1. Loading single AMP mutations...")
     single_sample_genes = load_mutations_from_directory(singles_dir)
     print(f"   Loaded {len(single_sample_genes)} single AMP samples")
 
+    # Count total genes
+    total_single_genes = sum(len(genes) for genes in single_sample_genes.values())
+    print(f"   Total unique gene-sample pairs: {total_single_genes}")
+
     # Load combination data
     print("\n2. Loading combination mutations...")
     combo_sample_genes = load_mutations_from_directory(combinations_dir)
     print(f"   Loaded {len(combo_sample_genes)} combination samples")
+
+    total_combo_genes = sum(len(genes) for genes in combo_sample_genes.values())
+    print(f"   Total unique gene-sample pairs: {total_combo_genes}")
 
     # Aggregate by treatment
     print("\n3. Aggregating by treatment...")
