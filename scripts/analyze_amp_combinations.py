@@ -109,17 +109,51 @@ def jaccard_similarity(set1: set, set2: set) -> float:
     return intersection / union
 
 
+def find_sample_directories(results_dir: Path) -> List[Path]:
+    """
+    Find all sample directories, including nested ones (e.g., BmKn_comb/BmKn_Smp1).
+    A sample directory is identified by having a mutations CSV file.
+    """
+    sample_dirs = []
+
+    for item in results_dir.iterdir():
+        if not item.is_dir():
+            continue
+
+        # Check if this directory has a mutations file (direct sample)
+        sample_name = item.name
+        mut_file = item / f"{sample_name}_mutations_freebayes.csv"
+        if not mut_file.exists():
+            mut_file = item / f"{sample_name}_mutations.csv"
+
+        if mut_file.exists():
+            sample_dirs.append(item)
+        else:
+            # Check for nested directories (e.g., BmKn_comb/BmKn_Smp1)
+            for subitem in item.iterdir():
+                if subitem.is_dir():
+                    sub_name = subitem.name
+                    sub_mut_file = subitem / f"{sub_name}_mutations_freebayes.csv"
+                    if not sub_mut_file.exists():
+                        sub_mut_file = subitem / f"{sub_name}_mutations.csv"
+                    if sub_mut_file.exists():
+                        sample_dirs.append(subitem)
+
+    return sample_dirs
+
+
 def load_mutations_from_directory(results_dir: Path) -> Dict[str, Set[str]]:
     """
     Load mutations from a results directory.
     Returns dict mapping sample_name -> set of mutated genes.
+    Handles nested directories (e.g., BmKn_comb/BmKn_Smp1).
     """
     sample_genes = {}
 
-    for sample_dir in results_dir.iterdir():
-        if not sample_dir.is_dir():
-            continue
+    # Find all sample directories (including nested ones)
+    sample_dirs = find_sample_directories(results_dir)
 
+    for sample_dir in sample_dirs:
         sample_name = sample_dir.name
 
         # Try freebayes results first
@@ -549,13 +583,14 @@ def load_mutations_with_details(results_dir: Path) -> Dict[str, pd.DataFrame]:
     """
     Load full mutation data from a results directory.
     Returns dict mapping sample_name -> DataFrame with all mutation details.
+    Handles nested directories (e.g., BmKn_comb/BmKn_Smp1).
     """
     sample_mutations = {}
 
-    for sample_dir in results_dir.iterdir():
-        if not sample_dir.is_dir():
-            continue
+    # Find all sample directories (including nested ones)
+    sample_dirs = find_sample_directories(results_dir)
 
+    for sample_dir in sample_dirs:
         sample_name = sample_dir.name
 
         # Try freebayes results first
