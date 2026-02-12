@@ -424,8 +424,15 @@ def main():
                         help='Output directory')
     parser.add_argument('--labels', nargs='+', default=None,
                         help='Labels for each result directory (e.g., Control Single Combination)')
+    parser.add_argument('--exclude-genes', nargs='+', default=[],
+                        help='Gene names to exclude (e.g., agrC agrA). Case-insensitive.')
+    parser.add_argument('--exclude-positions', nargs='+', type=int, default=[],
+                        help='Specific positions to exclude')
 
     args = parser.parse_args()
+
+    # Convert exclude genes to lowercase for case-insensitive matching
+    exclude_genes = set(g.lower() for g in args.exclude_genes)
 
     gff_path = Path(args.gff)
     output_dir = Path(args.output)
@@ -485,8 +492,49 @@ def main():
     # Combine all mutations
     print("\n3. Combining all mutations...")
     combined_df = pd.concat(all_mutations, ignore_index=True)
+
+    # Filter out excluded genes
+    initial_count = len(combined_df)
+    if exclude_genes:
+        print(f"\n   Filtering out excluded genes: {', '.join(args.exclude_genes)}")
+
+        # Create mask for genes to exclude (case-insensitive)
+        def should_exclude_gene(row):
+            gene_short = str(row.get('gene_short', '')).lower()
+            gene_name = str(row.get('gene_name_new', '')).lower()
+            gene_orig = str(row.get('GENE', row.get('gene_name', ''))).lower()
+
+            for excl in exclude_genes:
+                if excl in gene_short or excl in gene_name or excl in gene_orig:
+                    return True
+            return False
+
+        exclude_mask = combined_df.apply(should_exclude_gene, axis=1)
+        excluded_df = combined_df[exclude_mask]
+        combined_df = combined_df[~exclude_mask]
+
+        # Save excluded mutations for reference
+        if not excluded_df.empty:
+            excluded_df.to_csv(output_dir / 'excluded_mutations.csv', index=False)
+            print(f"   Excluded {len(excluded_df)} mutations (saved to excluded_mutations.csv)")
+
+    # Filter out excluded positions
+    if args.exclude_positions:
+        print(f"\n   Filtering out excluded positions: {args.exclude_positions}")
+        pos_col = None
+        for col in ['POS', 'position', 'pos']:
+            if col in combined_df.columns:
+                pos_col = col
+                break
+
+        if pos_col:
+            before = len(combined_df)
+            combined_df = combined_df[~combined_df[pos_col].isin(args.exclude_positions)]
+            print(f"   Excluded {before - len(combined_df)} mutations at specified positions")
+
+    print(f"\n   Total mutations after filtering: {len(combined_df)} (removed {initial_count - len(combined_df)})")
+
     combined_df.to_csv(output_dir / 'all_mutations_combined.csv', index=False)
-    print(f"   Total mutations: {len(combined_df)}")
     print(f"   Total samples: {combined_df['sample'].nunique()}")
 
     # Create summary statistics
